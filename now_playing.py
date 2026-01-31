@@ -32,8 +32,11 @@ import sys
 import asyncio
 import html
 import re
+import os
+import json
 import xml.etree.ElementTree as ET
-from typing import Optional, Dict
+from pathlib import Path
+from typing import Optional, Dict, List
 from urllib.parse import urlparse, parse_qs
 
 try:
@@ -43,15 +46,83 @@ except Exception:
     Device = None
     didl_lite = None
 
-# Ordered list of devices to query (names are resolved automatically).
+def _load_env(path: str) -> Dict[str, str]:
+    env: Dict[str, str] = {}
+    try:
+        with open(path, "r") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                key, sep, val = line.partition("=")
+                if not sep:
+                    continue
+                key = key.strip()
+                val = val.strip()
+                if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+                    val = val[1:-1]
+                env[key] = val
+    except FileNotFoundError:
+        raise
+    return env
+
+
+def load_devices_from_env(env_path: Optional[str] = None) -> List[Dict[str, str]]:
+    """Load device definitions from a .env file.
+
+    Looks for "DEVICES_JSON" (or fallback "DEVICES") containing a JSON array
+    of objects like {"ip": "...", "udn": "..."}.
+
+    The default path is .env next to this script. Can be overridden by setting
+    LINN_ENV_PATH in the environment or passing env_path.
+    """
+    default_path = str(Path(__file__).parent / ".env")
+    path = env_path or os.environ.get("LINN_ENV_PATH") or default_path
+    env = _load_env(path)
+    devices: List[Dict[str, str]] = []
+
+    # Preferred: lines like DEVICE_1=172.24.32.211 4c49..., DEVICE_2=...
+    kv_pairs = [(k, v) for k, v in env.items() if k == "DEVICE" or k.startswith("DEVICE_")]
+    if kv_pairs:
+        for _, v in sorted(kv_pairs, key=lambda kv: kv[0]):
+            line = v.strip()
+            if not line:
+                continue
+            # allow separators: space, comma, or semicolon
+            parts = re.split(r"[\s,;]+", line)
+            if len(parts) >= 2:
+                ip, udn = parts[0], parts[1]
+                if ip and udn:
+                    devices.append({"ip": ip, "udn": udn})
+
+    # Fallback: DEVICES_JSON/DEVICES JSON array
+    if not devices:
+        payload = env.get("DEVICES_JSON") or env.get("DEVICES")
+        if payload:
+            try:
+                data = json.loads(payload)
+            except Exception as e:
+                raise ValueError(f"Invalid DEVICES_JSON content: {e}")
+            if not isinstance(data, list):
+                raise ValueError("DEVICES_JSON must be a JSON array")
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                ip = item.get("ip")
+                udn = item.get("udn")
+                if ip and udn:
+                    devices.append({"ip": ip, "udn": udn})
+
+    if not devices:
+        raise ValueError(f"No devices found in {path}. Define DEVICE entries or DEVICES_JSON.")
+    return devices
+
+
+# Ordered list of devices to query (names are resolved automatically) loaded from .env.
 #
 # Tip: Keep this small and explicit. The script resolves names each run and
 # caches them in NAME_CACHE so Songcast leader names can be mapped by UDN.
-DEVICES = [
-    {"ip": "172.24.32.211", "udn": "4c494e4e-0026-0f22-5661-01531488013f"},
-    {"ip": "172.24.32.210", "udn": "4c494e4e-0026-0f22-646e-01560511013f"},
-    {"ip": "172.24.32.212", "udn": "4c494e4e-0026-0f22-3637-01475230013f"},
-]
+DEVICES = load_devices_from_env()
 
 # Cache resolved names by UDN during a single run.
 #
