@@ -28,6 +28,7 @@ This repository provides command-line utilities to interact with Linn DSM networ
 git clone https://github.com/kylegordon/openhome-tools.git
 cd openhome-tools
 ```
+> **Note:** Replace the URL above with your actual repository URL if different.
 
 2. Create a virtual environment (recommended):
 ```bash
@@ -106,6 +107,11 @@ Queries multiple Linn DSM devices for their current status and what's playing. D
 
 **Usage:**
 ```bash
+# Option 1: Using activated virtual environment
+source .venv/bin/activate
+python now_playing.py [--debug] [--trace-songcast]
+
+# Option 2: Direct virtual environment invocation
 .venv/bin/python now_playing.py [--debug] [--trace-songcast]
 ```
 
@@ -189,7 +195,15 @@ Lists all available sources on a Linn DSM device, showing which are visible/hidd
 
 **Usage:**
 ```bash
+# Option 1: Using activated virtual environment
+source .venv/bin/activate
+python query_sources.py <IP_ADDRESS> <UDN>
+
+# Option 2: Direct virtual environment invocation
 .venv/bin/python query_sources.py <IP_ADDRESS> <UDN>
+
+# Option 3: System Python (if dependencies installed globally)
+python3 query_sources.py <IP_ADDRESS> <UDN>
 ```
 
 **Example:**
@@ -241,6 +255,11 @@ Creates a Songcast group with one leader (sender) and one or more followers (rec
 
 **Usage with .env configuration:**
 ```bash
+# Option 1: Using activated virtual environment
+source .venv/bin/activate
+python songcast_group.py [--leader-songcast] [--debug]
+
+# Option 2: Direct virtual environment invocation
 .venv/bin/python songcast_group.py [--leader-songcast] [--debug]
 ```
 
