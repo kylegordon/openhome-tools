@@ -174,14 +174,32 @@ async def query_device(ip: str, udn: str, name: Optional[str] = None, debug: boo
     leader = None
     sender_uri_dbg = None
     sender_meta_head_dbg = None
-    is_songcast = ("songcast" in (src_type or "").lower()) or ("songcast" in (src_name or "").lower())
-    if is_songcast:
+    # Detect when the selected source is Songcast, and separately determine if the
+    # device is actually grouped (actively receiving from a Sender).
+    is_songcast_source = ("songcast" in (src_type or "").lower()) or ("songcast" in (src_name or "").lower())
+    is_songcast_grouped = False
+    songcast_transport_state = None
+    if is_songcast_source:
         try:
             recv = dev.device.service_id("urn:av-openhome-org:serviceId:Receiver")
             if recv is not None:
                 async def _get_sender():
                     return await recv.action("Sender").async_call()
+                async def _get_transport_state():
+                    return await recv.action("TransportState").async_call()
                 try:
+                    # Query transport state first to infer active receiver status
+                    try:
+                        ts_res = await asyncio.wait_for(_get_transport_state(), timeout=2.0)
+                        if isinstance(ts_res, dict):
+                            songcast_transport_state = (
+                                ts_res.get("TransportState")
+                                or ts_res.get("transportState")
+                                or ts_res.get("state")
+                            )
+                    except Exception:
+                        songcast_transport_state = None
+
                     sender_res = await asyncio.wait_for(_get_sender(), timeout=2.0)
                     if trace_songcast and isinstance(sender_res, dict):
                         uri_dbg = sender_res.get("Uri") or sender_res.get("uri") or ""
@@ -199,6 +217,20 @@ async def query_device(ip: str, udn: str, name: Optional[str] = None, debug: boo
                         sender_uri_dbg = uri_dbg or None
                         sender_meta_head_dbg = head or None
                     if isinstance(sender_res, dict):
+                        # Consider grouped if TransportState indicates active playback and Uri is present
+                        uri_present = bool(sender_res.get("Uri") or sender_res.get("uri"))
+                        meta_val = sender_res.get("Metadata") or sender_res.get("metadata") or ""
+                        meta_nonempty = bool(str(meta_val).strip())
+                        # Consider grouped when a Sender Uri is present AND either
+                        # - transport state indicates activity (playing/active/paused/etc), OR
+                        # - Sender metadata is present (indicates an active sender), OR
+                        # - track title is present while on Songcast (fallback heuristic)
+                        ts = (songcast_transport_state or "").lower()
+                        is_songcast_grouped = uri_present and (
+                            ts in ("playing", "active", "paused", "buffering", "connecting")
+                            or meta_nonempty
+                            or bool(title)
+                        )
                         # Prefer extracting from Sender Uri query params (room/name)
                         uri = sender_res.get("Uri") or sender_res.get("uri")
                         if uri:
@@ -260,7 +292,9 @@ async def query_device(ip: str, udn: str, name: Optional[str] = None, debug: boo
         "artist": artist,
         "album": album,
         "station": station,
-        "is_songcast": is_songcast,
+        "is_songcast": is_songcast_source,
+        "is_songcast_grouped": is_songcast_grouped,
+        "songcast_transport_state": songcast_transport_state,
         "songcast_leader": leader,
         "songcast_sender_uri": sender_uri_dbg,
         "songcast_sender_meta_head": sender_meta_head_dbg,
@@ -285,10 +319,18 @@ def format_result(r: Dict[str, Optional[str]]) -> str:
     if r.get("standby"):
         device = f"{device} (in standby)"
     if r.get("is_songcast"):
-        if r.get("songcast_leader"):
-            parts.append(f"Songcast Leader: {r['songcast_leader']}")
+        if r.get("is_songcast_grouped"):
+            if r.get("songcast_leader"):
+                parts.append(f"Songcast Leader: {r['songcast_leader']}")
+            else:
+                parts.append("Songcast: Grouped (leader unknown)")
+                if r.get("songcast_sender_uri"):
+                    parts.append(f"Sender Uri: {r['songcast_sender_uri']}")
         else:
-            parts.append("Songcast Leader: Unknown")
+            parts.append("Songcast: Not grouped")
+            ts = (r.get("songcast_transport_state") or "").capitalize()
+            if ts:
+                parts.append(f"Receiver: {ts}")
             # When tracing, also show raw fields if present
             if r.get("songcast_sender_uri"):
                 parts.append(f"Sender Uri: {r['songcast_sender_uri']}")
