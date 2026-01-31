@@ -179,6 +179,8 @@ async def query_device(ip: str, udn: str, name: Optional[str] = None, debug: boo
     is_songcast_source = ("songcast" in (src_type or "").lower()) or ("songcast" in (src_name or "").lower())
     is_songcast_grouped = False
     songcast_transport_state = None
+    songcast_status = None
+    songcast_sender_scheme = None
     if is_songcast_source:
         try:
             recv = dev.device.service_id("urn:av-openhome-org:serviceId:Receiver")
@@ -187,6 +189,8 @@ async def query_device(ip: str, udn: str, name: Optional[str] = None, debug: boo
                     return await recv.action("Sender").async_call()
                 async def _get_transport_state():
                     return await recv.action("TransportState").async_call()
+                async def _get_status():
+                    return await recv.action("Status").async_call()
                 try:
                     # Query transport state first to infer active receiver status
                     try:
@@ -199,6 +203,16 @@ async def query_device(ip: str, udn: str, name: Optional[str] = None, debug: boo
                             )
                     except Exception:
                         songcast_transport_state = None
+                    # Query status for additional context (not used for grouping decision)
+                    try:
+                        st_res = await asyncio.wait_for(_get_status(), timeout=2.0)
+                        if isinstance(st_res, dict):
+                            songcast_status = (
+                                st_res.get("Status")
+                                or st_res.get("status")
+                            )
+                    except Exception:
+                        songcast_status = None
 
                     sender_res = await asyncio.wait_for(_get_sender(), timeout=2.0)
                     if trace_songcast and isinstance(sender_res, dict):
@@ -218,19 +232,24 @@ async def query_device(ip: str, udn: str, name: Optional[str] = None, debug: boo
                         sender_meta_head_dbg = head or None
                     if isinstance(sender_res, dict):
                         # Consider grouped if TransportState indicates active playback and Uri is present
-                        uri_present = bool(sender_res.get("Uri") or sender_res.get("uri"))
-                        meta_val = sender_res.get("Metadata") or sender_res.get("metadata") or ""
-                        meta_nonempty = bool(str(meta_val).strip())
-                        # Consider grouped when a Sender Uri is present AND either
-                        # - transport state indicates activity (playing/active/paused/etc), OR
-                        # - Sender metadata is present (indicates an active sender), OR
-                        # - track title is present while on Songcast (fallback heuristic)
+                        uri_val = sender_res.get("Uri") or sender_res.get("uri")
+                        uri_present = bool(uri_val)
                         ts = (songcast_transport_state or "").lower()
-                        is_songcast_grouped = uri_present and (
-                            ts in ("playing", "active", "paused", "buffering", "connecting")
-                            or meta_nonempty
-                            or bool(title)
+                        # Heuristic:
+                        # - ohz:// indicates active Songcast zone distribution -> grouped
+                        # - ohSongcast:// is a sender descriptor; only grouped when transport active
+                        scheme = None
+                        try:
+                            if uri_val:
+                                scheme = urlparse(uri_val).scheme.lower()
+                        except Exception:
+                            scheme = None
+                        is_songcast_grouped = (
+                            (scheme == "ohz") or (
+                                uri_present and scheme == "ohsongcast" and ts in ("playing", "buffering", "connecting")
+                            )
                         )
+                        songcast_sender_scheme = scheme
                         # Prefer extracting from Sender Uri query params (room/name)
                         uri = sender_res.get("Uri") or sender_res.get("uri")
                         if uri:
@@ -298,6 +317,8 @@ async def query_device(ip: str, udn: str, name: Optional[str] = None, debug: boo
         "songcast_leader": leader,
         "songcast_sender_uri": sender_uri_dbg,
         "songcast_sender_meta_head": sender_meta_head_dbg,
+        "songcast_status": songcast_status,
+        "songcast_sender_scheme": songcast_sender_scheme,
         "standby": standby,
     }
 
@@ -319,18 +340,22 @@ def format_result(r: Dict[str, Optional[str]]) -> str:
     if r.get("standby"):
         device = f"{device} (in standby)"
     if r.get("is_songcast"):
+        scheme = r.get("songcast_sender_scheme") or "unknown"
         if r.get("is_songcast_grouped"):
             if r.get("songcast_leader"):
-                parts.append(f"Songcast Leader: {r['songcast_leader']}")
+                parts.append(f"Songcast Leader: {r['songcast_leader']} ({scheme})")
             else:
-                parts.append("Songcast: Grouped (leader unknown)")
+                parts.append(f"Songcast: Grouped ({scheme}, leader unknown)")
                 if r.get("songcast_sender_uri"):
                     parts.append(f"Sender Uri: {r['songcast_sender_uri']}")
         else:
-            parts.append("Songcast: Not grouped")
-            ts = (r.get("songcast_transport_state") or "").capitalize()
+            parts.append(f"Songcast: Not grouped ({scheme})")
+            ts = r.get("songcast_transport_state")
+            st = r.get("songcast_status")
             if ts:
                 parts.append(f"Receiver: {ts}")
+            if st:
+                parts.append(f"Status: {st}")
             # When tracing, also show raw fields if present
             if r.get("songcast_sender_uri"):
                 parts.append(f"Sender Uri: {r['songcast_sender_uri']}")
