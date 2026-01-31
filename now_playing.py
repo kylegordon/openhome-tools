@@ -1,8 +1,11 @@
 ###
 # Script to query Linn DSM devices for now playing information using openhomedevice
 # Requires openhomedevice package: https://pypi.org/project/openhomedevice/
+# Install in the project's virtual environment.
 # Usage:
-#   /home/kyleg/Sync/scripts/Linn/.venv/bin/python /home/kyleg/Sync/scripts/Linn/openhome_now_playing.py [--debug] [--trace-songcast]
+#   .venv/bin/python now_playing.py [--debug] [--trace-songcast]
+# Alternative:
+#   source .venv/bin/activate && python now_playing.py [--debug] [--trace-songcast]
 #
 # Notes for future reference:
 # - Device discovery is explicit via a static DEVICES list (ip + udn). Names are resolved at runtime.
@@ -25,6 +28,19 @@ Key behaviors:
 - Resolves friendly names at runtime and caches them by UDN (NAME_CACHE).
 - Uses Info service metadata to display radio and track details.
 - For Songcast, queries Receiver.Sender() and infers the leader via Uri/Metadata/UDN.
+
+Usage:
+    .venv/bin/python now_playing.py [--debug] [--trace-songcast]
+
+Alternative:
+    source .venv/bin/activate && python now_playing.py [--debug] [--trace-songcast]
+
+Example:
+    .venv/bin/python now_playing.py --debug
+
+Notes:
+- Install the "openhomedevice" package inside the project's virtual environment.
+- Devices are loaded from a local .env file (see DEVICES parsing rules below).
 """
 
 import argparse

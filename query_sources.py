@@ -8,7 +8,10 @@ Purpose:
 - Highlight the currently selected source index
 
 Usage:
-    python3 query_sources.py <IP_ADDRESS> <UDN>
+    .venv/bin/python query_sources.py <IP_ADDRESS> <UDN>
+
+Alternative:
+    source .venv/bin/activate && python query_sources.py <IP_ADDRESS> <UDN>
 
 Example:
     python3 query_sources.py 172.24.32.211 4c494e4e-0026-0f22-5661-01531488013f
@@ -20,7 +23,7 @@ Notes:
     "true/false", "1/0", and "yes/no".
 - Source naming prefers the "Name" tag when present; falls back to "SystemName".
 - To find a device UDN: python3 find_linn_udn.py <IP_ADDRESS>
-- Requires the "requests" package (install in your venv if needed).
+- Requires the "requests" package installed in the project's virtual environment.
 """
 
 import requests
@@ -136,9 +139,11 @@ def get_current_source(ip, udn):
 
 def main():
     if len(sys.argv) != 3:
-        print("Usage: python3 query_sources.py <ip_address> <udn>")
+        print("Usage: .venv/bin/python query_sources.py <ip_address> <udn>")
+        print("\nAlternative:")
+        print("source .venv/bin/activate && python query_sources.py <ip_address> <udn>")
         print("\nExample:")
-        print("python3 query_sources.py 172.24.32.141 4c494e4e-0026-0f22-5661-01531488013f")
+        print(".venv/bin/python query_sources.py 172.24.32.141 4c494e4e-0026-0f22-5661-01531488013f")
         print("\nTo find UDN: python3 find_linn_udn.py <ip_address>")
         print("\nNotes:")
         print("- Visibility is per device; hidden sources are shown as (HIDDEN)")
