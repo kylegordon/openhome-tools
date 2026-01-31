@@ -445,9 +445,10 @@ Please refer to the repository license file for licensing information.
 
 ## Resources
 
-- [Linn OpenHome Protocol Documentation](https://github.com/openhome)
+- [OpenHome Wiki - Main Documentation](https://wiki.openhome.org/)
+- [OpenHome Wiki - av.openhome.org Services](https://wiki.openhome.org/wiki/Av:Developer:Service)
+- [OpenHome Protocol Documentation on GitHub](https://github.com/openhome)
 - [openhomedevice Python Library](https://pypi.org/project/openhomedevice/)
-- [Linn Community Forum](https://community.linn.co.uk/)
 
 ## Credits
 
