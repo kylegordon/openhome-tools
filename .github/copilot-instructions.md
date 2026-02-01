@@ -10,6 +10,7 @@ http://wiki.openhome.org/wiki/Av:Developer:Songcast:Ohz
 http://wiki.openhome.org/wiki/Av:Developer:Songcast:Ohm
 https://docs.linn.co.uk/wiki/index.php/Developer:LPEC
 https://docs.linn.co.uk/wiki/images/3/32/LPEC_V2-5.pdf
+https://docs.linn.co.uk/wiki/index.php/FAQ-Linn_DS/DSM#Services.2C_ports.2C_protocols
 
 ```
 
