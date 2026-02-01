@@ -2,6 +2,9 @@
 """
 Script to discover the UDN (Unique Device Name) of a Linn DSM device
 Usage: python3 find_linn_udn.py <IP_ADDRESS>
+
+The protocol used on the telnet port is called LPEC (Linn Protocol for Eventing and Control)
+and is documented here: https://docs.linn.co.uk/wiki/index.php/Developer:LPEC
 """
 
 import socket
