@@ -158,13 +158,13 @@ class DeviceMonitor:
             return True
             
         except socket.timeout:
-            self.log(f"Connection timeout", "ERROR")
+            self.log(f"Connection timeout to {self.ip}", "ERROR")
             return False
         except ConnectionRefusedError:
-            self.log(f"Connection refused - device may be offline or telnet disabled", "ERROR")
+            self.log(f"Connection refused to {self.ip} - device may be offline or telnet disabled", "ERROR")
             return False
         except Exception as e:
-            self.log(f"Connection error: {e}", "ERROR")
+            self.log(f"Connection error to {self.ip}: {e}", "ERROR")
             return False
             
     def subscribe(self) -> bool:
