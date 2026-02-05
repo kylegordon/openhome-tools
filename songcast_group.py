@@ -7,7 +7,7 @@ Purpose:
     using the openhomedevice library.
 
 Usage (with .env):
-    .venv/bin/python experimental/songcast_group.py [--sender-songcast] [--debug]
+    .venv/bin/python experimental/songcast_group.py [--debug]
 
 Configuration (.env):
     # Map devices once, then run without flags
@@ -21,10 +21,10 @@ Alternative (override .env if needed):
     source .venv/bin/activate && python experimental/songcast_group.py \
         --sender-ip <IP_ADDRESS> --sender-udn <UDN> \
         --receiver-ip <IP_ADDRESS> --receiver-udn <UDN> \
-        [--sender-songcast] [--debug]
+        [--debug]
 
 Example (.env-driven, minimal):
-    .venv/bin/python experimental/songcast_group.py --sender-songcast --debug
+    .venv/bin/python experimental/songcast_group.py --debug
 
 Notes:
 - Uses openhomedevice to control Product:4 and Receiver services.
@@ -90,7 +90,6 @@ class LinnSongcastGrouper:
             self.sender_name = None
             self.receivers = receivers or []
             self.debug = debug
-            self.force_sender_songcast = False
 
         def _location(self, ip, udn):
             return f"http://{ip}:55178/{udn}/Upnp/device.xml"
@@ -194,38 +193,6 @@ class LinnSongcastGrouper:
                 print(f"✗ Failed to set {name} source: {e}")
                 return False
 
-        async def set_sender_to_songcast_sender(self, dev, name):
-            print(f"Setting {name} source to Songcast Sender...")
-            try:
-                prod = dev.device.service_id("urn:av-openhome-org:serviceId:Product")
-                if prod is None:
-                    raise RuntimeError("Product service not available")
-                sc = await prod.action("SourceCount").async_call()
-                count = int(sc.get("Value") or 8)
-                sender_idx = None
-                for i in range(count):
-                    try:
-                        sres = await prod.action("Source").async_call(Index=i)
-                        typ = (sres.get("Type") or "").lower()
-                        name_s = (sres.get("Name") or sres.get("SystemName") or "").lower()
-                        vis = (sres.get("Visible") or "true").strip().lower()
-                        if vis in ("true", "1", "yes") and ("sender" in typ or ("songcast" in name_s and "sender" in name_s)):
-                            sender_idx = i
-                            break
-                    except Exception:
-                        continue
-                if sender_idx is None:
-                    print("⚠ Could not find Songcast Sender source; leaving sender source unchanged")
-                    return False
-                try:
-                    await prod.action("SetSourceIndex").async_call(aIndex=sender_idx)
-                except Exception:
-                    await prod.action("SetSourceIndex").async_call(Value=sender_idx)
-                print(f"✓ {name} source set to Songcast Sender (index {sender_idx})")
-                return True
-            except Exception as e:
-                print(f"✗ Failed to set {name} to Songcast Sender: {e}")
-                return False
 
         def _build_sender_uri(self, sender_udn, sender_name=None, sender_room=None):
             from urllib.parse import urlencode
@@ -469,12 +436,6 @@ class LinnSongcastGrouper:
             await self.wake_device(mdev, self.sender_name)
             await asyncio.sleep(1.0)
 
-            # Optionally switch sender to Songcast Sender
-            if self.force_sender_songcast:
-                print("1b. Switching sender to Songcast Sender...")
-                await self.set_sender_to_songcast_sender(mdev, self.sender_name)
-                await asyncio.sleep(1.0)
-
             all_ok = True
             for sl in self.receivers:
                 s_ip = sl.get("ip")
@@ -534,7 +495,6 @@ def main():
     parser.add_argument('--receiver-ip', action='append', default=None)
     parser.add_argument('--receiver-udn', action='append', default=None)
     parser.add_argument('--debug', action='store_true')
-    parser.add_argument('--sender-songcast', action='store_true', help='Switch sender to Songcast Sender before joining')
     args = parser.parse_args()
 
     # Load .env configuration
@@ -571,7 +531,6 @@ def main():
         sys.exit(2)
 
     grouper = LinnSongcastGrouper(sender_ip, sender_udn, receivers, args.debug)
-    grouper.force_sender_songcast = bool(args.sender_songcast)
     success = asyncio.run(grouper.create_songcast_group_async())
     sys.exit(0 if success else 1)
 
