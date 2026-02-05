@@ -59,6 +59,9 @@ GROUPING_LOG=$(mktemp)
 
 # Cleanup function
 cleanup() {
+    # Remove trap to prevent multiple executions
+    trap - EXIT INT TERM
+    
     echo ""
     echo "===================================================================="
     echo "Cleaning up..."
@@ -72,9 +75,18 @@ cleanup() {
     
     rm -f "$MONITOR_LOG" "$GROUPING_LOG"
     echo "✓ Cleanup complete"
+    
+    # Exit explicitly if called from signal handler
+    [ "$1" = "signal" ] && exit 0
 }
 
-trap cleanup EXIT INT TERM
+# Signal handler that calls cleanup and exits
+handle_signal() {
+    cleanup signal
+}
+
+trap cleanup EXIT
+trap handle_signal INT TERM
 
 echo "Step 1: Starting songcast_monitor in background..."
 echo "--------------------------------------------------------------------"
