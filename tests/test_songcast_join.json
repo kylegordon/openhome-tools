@@ -1,0 +1,30 @@
+{
+  "name": "Songcast Group Join Test",
+  "description": "Verify that receivers successfully join the sender and reach Playing state",
+  "assertions": [
+    {
+      "device": "DEVICE_2",
+      "variable": "TransportState",
+      "value": "Playing",
+      "within_seconds": 10.0
+    },
+    {
+      "device": "DEVICE_3",
+      "variable": "TransportState",
+      "value": "Playing",
+      "within_seconds": 10.0
+    },
+    {
+      "device": "DEVICE_2",
+      "variable": "Status",
+      "value": "Yes",
+      "within_seconds": 12.0
+    },
+    {
+      "device": "DEVICE_3",
+      "variable": "Status",
+      "value": "Yes",
+      "within_seconds": 12.0
+    }
+  ]
+}

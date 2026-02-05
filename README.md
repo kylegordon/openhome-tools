@@ -329,7 +329,7 @@ Receiver:  172.24.32.143 (172.24.32.143)
 - Uses both API calls and direct SOAP requests for reliability
 - Polls briefly to verify successful grouping
 
-### 6. songcast_monitor.py (experimental/)
+### 6. songcast_monitor.py (tests/)
 
 **⚡ Test Harness for Command Validation**
 
@@ -338,23 +338,23 @@ Monitors Songcast member devices in real-time using LPEC (Linn Protocol for Even
 **Usage:**
 ```bash
 # Basic monitoring
-.venv/bin/python experimental/songcast_monitor.py
+.venv/bin/python tests/songcast_monitor.py
 
 # With debug output
-.venv/bin/python experimental/songcast_monitor.py --debug
+.venv/bin/python tests/songcast_monitor.py --debug
 
 # With verbose event logging
-.venv/bin/python experimental/songcast_monitor.py --verbose
+.venv/bin/python tests/songcast_monitor.py --verbose
 ```
 
 **Configuration (.env):**
-Monitors all devices listed in `SONGCAST_MEMBERS`:
+Monitors the sender and all receivers:
 ```bash
 DEVICE_1=172.24.32.211 4c494e4e-0026-0f22-5661-01531488013f
 DEVICE_2=172.24.32.210 4c494e4e-0026-0f22-646e-01560511013f
 DEVICE_3=172.24.32.212 4c494e4e-0026-0f22-3637-01475230013f
-SONGCAST_MASTER=DEVICE_1
-SONGCAST_MEMBERS=DEVICE_2,DEVICE_3  # These will be monitored
+SONGCAST_SENDER=DEVICE_1
+SONGCAST_RECEIVERS=DEVICE_2,DEVICE_3
 ```
 
 **Example Output:**
@@ -384,12 +384,12 @@ SONGCAST_MEMBERS=DEVICE_2,DEVICE_3  # These will be monitored
 - Observing real hardware behavior
 
 **Test Workflow:**
-1. Start monitor in one terminal: `.venv/bin/python experimental/songcast_monitor.py --debug`
-2. Execute command in another terminal: `.venv/bin/python songcast_group.py --sender-songcast`
+1. Start monitor in one terminal: `.venv/bin/python tests/songcast_monitor.py --debug`
+2. Execute command in another terminal: `.venv/bin/python songcast_group.py --debug`
 3. Observe real-time state changes in monitor output
 4. Verify expected states: Playing, correct Sender URI, Status=Yes
 
-See [experimental/SONGCAST_MONITOR.md](experimental/SONGCAST_MONITOR.md) for detailed documentation.
+See [tests/SONGCAST_MONITOR.md](tests/SONGCAST_MONITOR.md) for detailed documentation.
 
 ## Common Workflows
 

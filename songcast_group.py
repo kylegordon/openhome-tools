@@ -47,6 +47,13 @@ try:
 except Exception:
     pass
 
+# Import LPEC utilities for state verification
+try:
+    from lpec_utils import wait_for_state, format_state_summary
+    LPEC_AVAILABLE = True
+except ImportError:
+    LPEC_AVAILABLE = False
+
 try:
     from openhomedevice.device import Device
 except Exception:
@@ -472,12 +479,38 @@ class LinnSongcastGrouper:
                     print("⚠ Receiver join did not complete; receiver UI may prompt for sender selection.")
 
                 print("5. Verifying Songcast configuration...")
+                
+                # First check: openhomedevice API grouping status
                 grouped = await self._is_grouped(sdev)
                 if grouped:
-                    print("✓ SUCCESS: Receiver actively grouped (ohz/transport active)")
+                    print("✓ API Check: Receiver reports grouped (ohz/transport active)")
                 else:
-                    print("⚠ Receiver not grouped (no ohz/transport idle)")
+                    print("⚠ API Check: Receiver not grouped (no ohz/transport idle)")
                     all_ok = False
+                
+                # Second check: LPEC real-time state verification
+                if LPEC_AVAILABLE:
+                    print("  Verifying via LPEC...")
+                    success, final_state = wait_for_state(
+                        s_ip,
+                        {'TransportState': 'Playing'},
+                        timeout=8.0,
+                        poll_interval=0.5
+                    )
+                    
+                    if success:
+                        print(f"✓ LPEC Verification: Device reached Playing state")
+                        print(f"  Final state: {format_state_summary(final_state)}")
+                    else:
+                        print(f"⚠ LPEC Verification: Device did not reach Playing state within timeout")
+                        if final_state:
+                            print(f"  Last state: {format_state_summary(final_state)}")
+                        else:
+                            print(f"  Could not query device state (offline or telnet disabled?)")
+                        all_ok = False
+                else:
+                    print("  (LPEC verification skipped - lpec_utils module not available)")
+
 
             print("\n" + "=" * 50)
             if all_ok:
