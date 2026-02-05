@@ -70,7 +70,7 @@ Now includes LPEC verification after each receiver join operation.
 
 Run monitor with test assertions from JSON file:
 ```bash
-.venv/bin/python experimental/songcast_monitor.py --test experimental/test_songcast_join.json
+.venv/bin/python tests/songcast_monitor.py --test tests/test_songcast_join.json
 ```
 
 **Test JSON Format:**
