@@ -531,7 +531,7 @@ def main():
     args = parser.parse_args()
 
     # Load .env configuration
-    env_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.env'))
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
     devices_map, env_sender_id, env_receiver_ids = _load_env_devices(env_path)
 
     # Resolve sender from args or env
