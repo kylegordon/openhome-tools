@@ -3,34 +3,34 @@
 Linn OpenHome Songcast Group Creator
 
 Purpose:
-- Create a Songcast group with one leader (sender) and one or more followers (receivers)
+- Create a Songcast group with one sender and one or more receivers
     using the openhomedevice library.
 
 Usage (with .env):
-    .venv/bin/python experimental/songcast_group.py [--leader-songcast] [--debug]
+    .venv/bin/python experimental/songcast_group.py [--sender-songcast] [--debug]
 
 Configuration (.env):
     # Map devices once, then run without flags
-    DEVICE_1=<MASTER_IP> <MASTER_UDN>
-    DEVICE_2=<MEMBER_1_IP> <MEMBER_1_UDN>
-    DEVICE_3=<MEMBER_2_IP> <MEMBER_2_UDN>
-    SONGCAST_MASTER=DEVICE_1
-    SONGCAST_MEMBERS=DEVICE_2,DEVICE_3
+    DEVICE_1=<SENDER_IP> <SENDER_UDN>
+    DEVICE_2=<RECEIVER_1_IP> <RECEIVER_1_UDN>
+    DEVICE_3=<RECEIVER_2_IP> <RECEIVER_2_UDN>
+    SONGCAST_SENDER=DEVICE_1
+    SONGCAST_RECEIVERS=DEVICE_2,DEVICE_3
 
 Alternative (override .env if needed):
     source .venv/bin/activate && python experimental/songcast_group.py \
-        --master-ip <IP_ADDRESS> --master-udn <UDN> \
-        --slave-ip <IP_ADDRESS> --slave-udn <UDN> \
-        [--leader-songcast] [--debug]
+        --sender-ip <IP_ADDRESS> --sender-udn <UDN> \
+        --receiver-ip <IP_ADDRESS> --receiver-udn <UDN> \
+        [--sender-songcast] [--debug]
 
 Example (.env-driven, minimal):
-    .venv/bin/python experimental/songcast_group.py --leader-songcast --debug
+    .venv/bin/python experimental/songcast_group.py --sender-songcast --debug
 
 Notes:
 - Uses openhomedevice to control Product:4 and Receiver services.
-- Ensures follower source is Songcast and joins leader via Receiver.SetSender.
+- Ensures receiver source is Songcast and joins sender via Receiver.SetSender.
 - Prefers ohz URIs discovered via Receiver.Senders; falls back to ohSongcast descriptor.
-- Supports .env configuration: define DEVICE_n entries, SONGCAST_MASTER and SONGCAST_MEMBERS.
+- Supports .env configuration: define DEVICE_n entries, SONGCAST_SENDER and SONGCAST_RECEIVERS.
 - To find a device UDN: python3 find_linn_udn.py <IP_ADDRESS>
 - Recommended: pipe terminal output to a file for reliable reading.
 """
@@ -54,8 +54,8 @@ except Exception:
 
 def _load_env_devices(env_path):
     devices = {}
-    master_id = None
-    member_ids = []
+    sender_id = None
+    receiver_ids = []
     try:
         with open(env_path, 'r') as f:
             for raw in f:
@@ -74,23 +74,23 @@ def _load_env_devices(env_path):
                     parts = val.split()
                     if len(parts) >= 2:
                         devices[key] = {"ip": parts[0], "udn": parts[1]}
-                elif key == 'SONGCAST_MASTER':
-                    master_id = val.strip()
-                elif key == 'SONGCAST_MEMBERS':
-                    member_ids = [v.strip() for v in val.split(',') if v.strip()]
+                elif key == 'SONGCAST_SENDER':
+                    sender_id = val.strip()
+                elif key == 'SONGCAST_RECEIVERS':
+                    receiver_ids = [v.strip() for v in val.split(',') if v.strip()]
     except Exception:
         pass
-    return devices, master_id, member_ids
+    return devices, sender_id, receiver_ids
 
 class LinnSongcastGrouper:
-        def __init__(self, master_ip, master_udn, slaves, debug=False):
-            self.master_ip = master_ip
-            self.master_udn = master_udn
-            # Master name will be resolved from device.xml (friendly_name/Product.Name)
-            self.master_name = None
-            self.slaves = slaves or []
+        def __init__(self, sender_ip, sender_udn, receivers, debug=False):
+            self.sender_ip = sender_ip
+            self.sender_udn = sender_udn
+            # Sender name will be resolved from device.xml (friendly_name/Product.Name)
+            self.sender_name = None
+            self.receivers = receivers or []
             self.debug = debug
-            self.force_leader_songcast = False
+            self.force_sender_songcast = False
 
         def _location(self, ip, udn):
             return f"http://{ip}:55178/{udn}/Upnp/device.xml"
@@ -194,7 +194,7 @@ class LinnSongcastGrouper:
                 print(f"✗ Failed to set {name} source: {e}")
                 return False
 
-        async def set_leader_to_songcast_sender(self, dev, name):
+        async def set_sender_to_songcast_sender(self, dev, name):
             print(f"Setting {name} source to Songcast Sender...")
             try:
                 prod = dev.device.service_id("urn:av-openhome-org:serviceId:Product")
@@ -215,7 +215,7 @@ class LinnSongcastGrouper:
                     except Exception:
                         continue
                 if sender_idx is None:
-                    print("⚠ Could not find Songcast Sender source; leaving leader source unchanged")
+                    print("⚠ Could not find Songcast Sender source; leaving sender source unchanged")
                     return False
                 try:
                     await prod.action("SetSourceIndex").async_call(aIndex=sender_idx)
@@ -227,15 +227,15 @@ class LinnSongcastGrouper:
                 print(f"✗ Failed to set {name} to Songcast Sender: {e}")
                 return False
 
-        def _build_sender_uri(self, leader_udn, leader_name=None, leader_room=None):
+        def _build_sender_uri(self, sender_udn, sender_name=None, sender_room=None):
             from urllib.parse import urlencode
             params = {}
-            if leader_room:
-                params["room"] = leader_room
-            if leader_name:
-                params["name"] = leader_name
+            if sender_room:
+                params["room"] = sender_room
+            if sender_name:
+                params["name"] = sender_name
             q = ("?" + urlencode(params)) if params else ""
-            return f"ohSongcast://{leader_udn}{q}"
+            return f"ohSongcast://{sender_udn}{q}"
 
         async def _is_grouped(self, dev):
             try:
@@ -259,27 +259,27 @@ class LinnSongcastGrouper:
             except Exception:
                 return False
 
-        async def _receiver_join(self, follower_dev, leader_dev, follower_ip, follower_udn, fallback_leader_udn, fallback_leader_name):
+        async def _receiver_join(self, receiver_dev, sender_dev, receiver_ip, receiver_udn, fallback_sender_udn, fallback_sender_name):
             try:
-                recv = follower_dev.device.service_id("urn:av-openhome-org:serviceId:Receiver")
+                recv = receiver_dev.device.service_id("urn:av-openhome-org:serviceId:Receiver")
                 if recv is None:
                     return False
                 try:
-                    leader_room = await leader_dev.room()
+                    sender_room = await sender_dev.room()
                 except Exception:
-                    leader_room = None
+                    sender_room = None
                 try:
-                    leader_name = await leader_dev.name()
+                    sender_name = await sender_dev.name()
                 except Exception:
-                    leader_name = fallback_leader_name
-                leader_udn = fallback_leader_udn
+                    sender_name = fallback_sender_name
+                sender_udn = fallback_sender_udn
 
                 candidate_uris = []
                 uri = None
                 metadata = None
-                # Prefer leader's Sender info
+                # Prefer sender's Sender info
                 try:
-                    ssvc = leader_dev.device.service_id("urn:av-openhome-org:serviceId:Sender")
+                    ssvc = sender_dev.device.service_id("urn:av-openhome-org:serviceId:Sender")
                     if ssvc is not None:
                         sres = await ssvc.action("Sender").async_call()
                         uri = sres.get("Uri") or sres.get("uri")
@@ -290,19 +290,19 @@ class LinnSongcastGrouper:
                     uri = None
                     metadata = None
                 if not uri:
-                    uri = self._build_sender_uri(leader_udn, leader_name=leader_name, leader_room=leader_room)
+                    uri = self._build_sender_uri(sender_udn, sender_name=sender_name, sender_room=sender_room)
                 candidate_uris.append(uri)
 
                 if metadata is None:
-                    title = f"{leader_room or ''} - {leader_name or ''}".strip(" -")
+                    title = f"{sender_room or ''} - {sender_name or ''}".strip(" -")
                     metadata = (
                         "<?xml version=\"1.0\"?>"
                         "<DIDL-Lite xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\">"
                         "<item id=\"ohSongcast\" parentID=\"0\" restricted=\"true\">"
                         f"<dc:title>{title}</dc:title>"
                         "<upnp:class>object.item.audioItem</upnp:class>"
-                        f"<upnp:artist>{leader_name or ''}</upnp:artist>"
-                        f"<upnp:album>{leader_room or ''}</upnp:album>"
+                        f"<upnp:artist>{sender_name or ''}</upnp:artist>"
+                        f"<upnp:album>{sender_room or ''}</upnp:album>"
                         "<dc:publisher>OpenHome</dc:publisher>"
                         "</item>"
                         "</DIDL-Lite>"
@@ -327,7 +327,7 @@ class LinnSongcastGrouper:
                                         title = txt.strip()
                                     elif tag.endswith('res') and txt.startswith('ohz://'):
                                         res_uris.append(txt)
-                                if title and res_uris and ((leader_room and title == leader_room) or (leader_name and title == leader_name)):
+                                if title and res_uris and ((sender_room and title == sender_room) or (sender_name and title == sender_name)):
                                     exact = res_uris[0]
                                     break
                                 fallbacks.extend(res_uris)
@@ -339,8 +339,8 @@ class LinnSongcastGrouper:
                     await asyncio.sleep(0.5)
                 if ohz_uri:
                     candidate_uris.insert(0, ohz_uri)
-                elif leader_udn:
-                    candidate_uris.insert(0, f"ohz://239.255.255.250:51972/{leader_udn}")
+                elif sender_udn:
+                    candidate_uris.insert(0, f"ohz://239.255.255.250:51972/{sender_udn}")
                 print(f"Candidates: {candidate_uris}")
 
                 # Try candidates
@@ -354,7 +354,7 @@ class LinnSongcastGrouper:
                         if str(cand).lower().startswith("ohz://"):
                             # Prefer SOAP for ohz SetSender/Play to bypass metadata quirks
                             try:
-                                url = f"http://{follower_ip}:55178/{follower_udn}/av.openhome.org-Receiver-1/control"
+                                url = f"http://{receiver_ip}:55178/{receiver_udn}/av.openhome.org-Receiver-1/control"
                                 hdrs_set = {
                                     "SOAPACTION": '"urn:av-openhome-org:service:Receiver:1#SetSender"',
                                     "Content-Type": 'text/xml; charset="utf-8"'
@@ -397,7 +397,7 @@ class LinnSongcastGrouper:
                             try:
                                 ts = await recv.action("TransportState").async_call()
                                 state = (ts.get("TransportState") or ts.get("state") or "").lower()
-                                grouped_now = await self._is_grouped(follower_dev)
+                                grouped_now = await self._is_grouped(receiver_dev)
                                 if self.debug:
                                     print(f"  State={state}, grouped={grouped_now}, cand={cand}")
                                 if grouped_now or (str(cand).lower().startswith("ohz://") and state in ("playing", "buffering", "connecting")):
@@ -419,8 +419,8 @@ class LinnSongcastGrouper:
                     pass
                 # SOAP fallback: force ohz SetSender + Play
                 try:
-                    url = f"http://{follower_ip}:55178/{follower_udn}/av.openhome.org-Receiver-1/control"
-                    default_ohz = f"ohz://239.255.255.250:51972/{leader_udn}"
+                    url = f"http://{receiver_ip}:55178/{receiver_udn}/av.openhome.org-Receiver-1/control"
+                    default_ohz = f"ohz://239.255.255.250:51972/{sender_udn}"
                     hdrs_set = {
                         "SOAPACTION": '"urn:av-openhome-org:service:Receiver:1#SetSender"',
                         "Content-Type": 'text/xml; charset="utf-8"'
@@ -448,54 +448,54 @@ class LinnSongcastGrouper:
 
         async def create_songcast_group_async(self):
             print("=== Linn OpenHome Songcast Group Creator ===", flush=True)
-            if not self.slaves:
-                print("No followers specified.")
+            if not self.receivers:
+                print("No receivers specified.")
                 return False
 
-            # Init leader and resolve name from device.xml
+            # Init sender and resolve name from device.xml
             try:
-                mdev = await self._init_dev(self.master_ip, self.master_udn)
+                mdev = await self._init_dev(self.sender_ip, self.sender_udn)
             except Exception as e:
-                print(f"✗ Leader initialization failed: {e}")
+                print(f"✗ Sender initialization failed: {e}")
                 return False
-            self.master_name = await self._resolve_device_name(mdev, fallback=self.master_ip)
-            print(f"Leader: {self.master_name} ({self.master_ip})")
-            for sl in self.slaves:
-                print(f"Follower:  {sl.get('ip')} ({sl.get('ip')})")
+            self.sender_name = await self._resolve_device_name(mdev, fallback=self.sender_ip)
+            print(f"Sender: {self.sender_name} ({self.sender_ip})")
+            for sl in self.receivers:
+                print(f"Receiver:  {sl.get('ip')} ({sl.get('ip')})")
             print("-" * 50)
 
-            # Wake leader
-            print("\n1. Waking leader from standby...")
-            await self.wake_device(mdev, self.master_name)
+            # Wake sender
+            print("\n1. Waking sender from standby...")
+            await self.wake_device(mdev, self.sender_name)
             await asyncio.sleep(1.0)
 
-            # Optionally switch leader to Songcast Sender
-            if self.force_leader_songcast:
-                print("1b. Switching leader to Songcast Sender...")
-                await self.set_leader_to_songcast_sender(mdev, self.master_name)
+            # Optionally switch sender to Songcast Sender
+            if self.force_sender_songcast:
+                print("1b. Switching sender to Songcast Sender...")
+                await self.set_sender_to_songcast_sender(mdev, self.sender_name)
                 await asyncio.sleep(1.0)
 
             all_ok = True
-            for sl in self.slaves:
+            for sl in self.receivers:
                 s_ip = sl.get("ip")
                 s_udn = sl.get("udn")
                 s_name = None
                 try:
                     sdev = await self._init_dev(s_ip, s_udn)
                 except Exception as e:
-                    print(f"✗ Follower init failed: {e}")
+                    print(f"✗ Receiver init failed: {e}")
                     all_ok = False
                     continue
 
 
-                # Resolve follower name from device.xml; fallback to IP
+                # Resolve receiver name from device.xml; fallback to IP
                 s_name = await self._resolve_device_name(sdev, fallback=s_ip)
-                print(f"\n=== Configuring follower {s_name} ({s_ip}) ===")
-                print("2. Waking follower from standby...")
+                print(f"\n=== Configuring receiver {s_name} ({s_ip}) ===")
+                print("2. Waking receiver from standby...")
                 await self.wake_device(sdev, s_name)
                 await asyncio.sleep(1.0)
 
-                print("3. Ensuring follower source is Songcast...")
+                print("3. Ensuring receiver source is Songcast...")
                 await self.set_source_to_songcast(sdev, s_name)
                 await asyncio.sleep(1.0)
                 # Small status line: report current source index/name
@@ -505,73 +505,73 @@ class LinnSongcastGrouper:
                 else:
                     print(f"Status: {s_name} source unknown")
 
-                print("4. Joining follower to leader...")
-                joined = await self._receiver_join(sdev, mdev, s_ip, s_udn, self.master_udn, self.master_name)
+                print("4. Joining receiver to sender...")
+                joined = await self._receiver_join(sdev, mdev, s_ip, s_udn, self.sender_udn, self.sender_name)
                 if not joined:
-                    print("⚠ Receiver join did not complete; follower UI may prompt for leader selection.")
+                    print("⚠ Receiver join did not complete; receiver UI may prompt for sender selection.")
 
                 print("5. Verifying Songcast configuration...")
                 grouped = await self._is_grouped(sdev)
                 if grouped:
-                    print("✓ SUCCESS: Follower actively grouped (ohz/transport active)")
+                    print("✓ SUCCESS: Receiver actively grouped (ohz/transport active)")
                 else:
-                    print("⚠ Follower not grouped (no ohz/transport idle)")
+                    print("⚠ Receiver not grouped (no ohz/transport idle)")
                     all_ok = False
 
             print("\n" + "=" * 50)
             if all_ok:
-                print("✓ SUCCESS: Songcast group configured for all followers!")
-                print(f"\n🎵 Play audio on {self.master_name} and it should stream to followers")
+                print("✓ SUCCESS: Songcast group configured for all receivers!")
+                print(f"\n🎵 Play audio on {self.sender_name} and it should stream to receivers")
                 return True
             else:
-                print("⚠ Songcast group configuration incomplete for one or more followers")
+                print("⚠ Songcast group configuration incomplete for one or more receivers")
                 return False
 
 def main():
     parser = argparse.ArgumentParser(description='Create Linn OpenHome Songcast group')
-    parser.add_argument('--master-ip', default=None)
-    parser.add_argument('--master-udn', default=None)
-    parser.add_argument('--slave-ip', action='append', default=None)
-    parser.add_argument('--slave-udn', action='append', default=None)
+    parser.add_argument('--sender-ip', default=None)
+    parser.add_argument('--sender-udn', default=None)
+    parser.add_argument('--receiver-ip', action='append', default=None)
+    parser.add_argument('--receiver-udn', action='append', default=None)
     parser.add_argument('--debug', action='store_true')
-    parser.add_argument('--leader-songcast', action='store_true', help='Switch leader to Songcast Sender before joining')
+    parser.add_argument('--sender-songcast', action='store_true', help='Switch sender to Songcast Sender before joining')
     args = parser.parse_args()
 
     # Load .env configuration
     env_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.env'))
-    devices_map, env_master_id, env_member_ids = _load_env_devices(env_path)
+    devices_map, env_sender_id, env_receiver_ids = _load_env_devices(env_path)
 
-    # Resolve master from args or env
-    master_ip = args.master_ip
-    master_udn = args.master_udn
-    if (not master_ip or not master_udn) and env_master_id:
-        dev = devices_map.get(env_master_id)
+    # Resolve sender from args or env
+    sender_ip = args.sender_ip
+    sender_udn = args.sender_udn
+    if (not sender_ip or not sender_udn) and env_sender_id:
+        dev = devices_map.get(env_sender_id)
         if dev:
-            master_ip = master_ip or dev.get('ip')
-            master_udn = master_udn or dev.get('udn')
+            sender_ip = sender_ip or dev.get('ip')
+            sender_udn = sender_udn or dev.get('udn')
 
-    # Resolve members from args or env
-    slave_ips = args.slave_ip or []
-    slave_udns = args.slave_udn or []
-    slaves = []
-    if slave_ips:
+    # Resolve receivers from args or env
+    receiver_ips = args.receiver_ip or []
+    receiver_udns = args.receiver_udn or []
+    receivers = []
+    if receiver_ips:
         # Pair with provided UDNs (pad missing with last-known or None)
-        for i, ip in enumerate(slave_ips):
-            udn = slave_udns[i] if (slave_udns and i < len(slave_udns)) else (slave_udns[-1] if slave_udns else None)
-            slaves.append({"ip": ip, "udn": udn})
-    elif env_member_ids:
-        for mid in env_member_ids:
+        for i, ip in enumerate(receiver_ips):
+            udn = receiver_udns[i] if (receiver_udns and i < len(receiver_udns)) else (receiver_udns[-1] if receiver_udns else None)
+            receivers.append({"ip": ip, "udn": udn})
+    elif env_receiver_ids:
+        for mid in env_receiver_ids:
             dev = devices_map.get(mid)
             if dev:
-                slaves.append({"ip": dev.get('ip'), "udn": dev.get('udn')})
+                receivers.append({"ip": dev.get('ip'), "udn": dev.get('udn')})
 
-    # Validate master presence
-    if not master_ip or not master_udn:
-        print("✗ Missing master IP/UDN. Provide --master-ip/--master-udn or set SONGCAST_MASTER in .env")
+    # Validate sender presence
+    if not sender_ip or not sender_udn:
+        print("✗ Missing sender IP/UDN. Provide --sender-ip/--sender-udn or set SONGCAST_SENDER in .env")
         sys.exit(2)
 
-    grouper = LinnSongcastGrouper(master_ip, master_udn, slaves, args.debug)
-    grouper.force_leader_songcast = bool(args.leader_songcast)
+    grouper = LinnSongcastGrouper(sender_ip, sender_udn, receivers, args.debug)
+    grouper.force_sender_songcast = bool(args.sender_songcast)
     success = asyncio.run(grouper.create_songcast_group_async())
     sys.exit(0 if success else 1)
 

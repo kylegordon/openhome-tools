@@ -11,23 +11,23 @@
 # - Device discovery is explicit via a static DEVICES list (ip + udn). Names are resolved at runtime.
 # - We use openhomedevice async Device API: init() -> source() -> track_info(), plus product Standby.
 # - Radio: we treat Info.title as the station name.
-# - Songcast: when the current source looks like Songcast, we query Receiver.Sender() to find the leader.
-#   Leader resolution order: Sender Uri query (room/name) -> Sender Metadata (publisher/author/title/artist)
-#   -> Leader UDN from Uri path mapped to known devices (NAME_CACHE or on-demand lookup).
+# - Songcast: when the current source looks like Songcast, we query Receiver.Sender() to find the sender.
+#   Sender resolution order: Sender Uri query (room/name) -> Sender Metadata (publisher/author/title/artist)
+#   -> Sender UDN from Uri path mapped to known devices (NAME_CACHE or on-demand lookup).
 # - --trace-songcast prints Sender Uri and a short head of Metadata to stdout for diagnostics.
 ###
 
 """Linn DSM now-playing reporter using openhomedevice.
 
 This module prints a single formatted line per device describing its power state,
-source, and what is currently playing. For Songcast followers, it also includes
-the Songcast leader name when determinable.
+source, and what is currently playing. For Songcast receivers, it also includes
+the Songcast sender name when determinable.
 
 Key behaviors:
 - Iterates a static list of devices (DEVICES) identified by IP and UDN.
 - Resolves friendly names at runtime and caches them by UDN (NAME_CACHE).
 - Uses Info service metadata to display radio and track details.
-- For Songcast, queries Receiver.Sender() and infers the leader via Uri/Metadata/UDN.
+- For Songcast, queries Receiver.Sender() and infers the sender via Uri/Metadata/UDN.
 
 Usage:
     .venv/bin/python now_playing.py [--debug] [--trace-songcast]
@@ -137,12 +137,12 @@ def load_devices_from_env(env_path: Optional[str] = None) -> List[Dict[str, str]
 # Ordered list of devices to query (names are resolved automatically) loaded from .env.
 #
 # Tip: Keep this small and explicit. The script resolves names each run and
-# caches them in NAME_CACHE so Songcast leader names can be mapped by UDN.
+# caches them in NAME_CACHE so Songcast sender names can be mapped by UDN.
 DEVICES = load_devices_from_env()
 
 # Cache resolved names by UDN during a single run.
 #
-# Used to label Songcast leaders when only their UDN is available in Sender Uri.
+# Used to label Songcast senders when only their UDN is available in Sender Uri.
 NAME_CACHE: Dict[str, str] = {}
 
 
@@ -197,12 +197,12 @@ async def query_device(ip: str, udn: str, name: Optional[str] = None, debug: boo
     - Resolves the device's display name (friendly_name or Product.Name) and caches it by UDN.
     - Reads current Product source and Info track metadata.
     - Derives radio station from Info.title when on Radio.
-    - If the source looks like Songcast, queries Receiver.Sender() to infer the leader name
+    - If the source looks like Songcast, queries Receiver.Sender() to infer the sender name
       via Uri query params, DIDL metadata, or UDN mapping through NAME_CACHE/DEVICES.
 
     Args:
         ip: Device IP address
-        udn: Device UDN (used to build the device.xml URL and for leader mapping)
+        udn: Device UDN (used to build the device.xml URL and for sender mapping)
         name: Optional override for display name (usually left None)
         debug: Unused here (kept for parity)
         trace_songcast: When True, prints Sender Uri and Metadata head for diagnostics
@@ -229,7 +229,7 @@ async def query_device(ip: str, udn: str, name: Optional[str] = None, debug: boo
             device_name = await dev.name()
         except Exception:
             device_name = name or ip
-    # Cache resolved name for later leader lookup
+    # Cache resolved name for later sender lookup
     try:
         if device_name:
             NAME_CACHE[udn] = device_name
@@ -257,8 +257,8 @@ async def query_device(ip: str, udn: str, name: Optional[str] = None, debug: boo
     if (src_type or "").lower() == "radio" or (src_name or "").lower() == "radio":
         station = title
 
-    # Songcast leader (Receiver service -> Sender()) only when on Songcast source
-    leader = None
+    # Songcast sender (Receiver service -> Sender()) only when on Songcast source
+    sender = None
     sender_uri_dbg = None
     sender_meta_head_dbg = None
     # Detect when the selected source is Songcast, and separately determine if the
@@ -343,26 +343,26 @@ async def query_device(ip: str, udn: str, name: Optional[str] = None, debug: boo
                             try:
                                 u = urlparse(uri)
                                 qs = {k.lower(): v for k, v in parse_qs(u.query).items()}
-                                leader_udn = u.path.strip("/") if u and u.path else None
+                                sender_udn = u.path.strip("/") if u and u.path else None
                                 # common keys seen: room, name
                                 for key in ("room", "name"):
                                     if key in qs and qs[key]:
-                                        leader = qs[key][0]
+                                        sender = qs[key][0]
                                         break
-                                # If still unknown, try to resolve from leader UDN
-                                if not leader and leader_udn:
+                                # If still unknown, try to resolve from sender UDN
+                                if not sender and sender_udn:
                                     # Check cache
-                                    leader = NAME_CACHE.get(leader_udn)
-                                    if not leader:
+                                    sender = NAME_CACHE.get(sender_udn)
+                                    if not sender:
                                         # Find matching device IP from known devices
-                                        leader_ip = None
+                                        sender_ip = None
                                         for dd in DEVICES:
-                                            if dd.get("udn") == leader_udn:
-                                                leader_ip = dd.get("ip")
+                                            if dd.get("udn") == sender_udn:
+                                                sender_ip = dd.get("ip")
                                                 break
-                                        if leader_ip:
+                                        if sender_ip:
                                             try:
-                                                ldev = Device(f"http://{leader_ip}:55178/{leader_udn}/Upnp/device.xml")
+                                                ldev = Device(f"http://{sender_ip}:55178/{sender_udn}/Upnp/device.xml")
                                                 await asyncio.wait_for(ldev.init(), timeout=2.0)
                                                 try:
                                                     lname = ldev.friendly_name()
@@ -374,17 +374,17 @@ async def query_device(ip: str, udn: str, name: Optional[str] = None, debug: boo
                                                     except Exception:
                                                         lname = None
                                                 if lname:
-                                                    leader = lname
-                                                    NAME_CACHE[leader_udn] = lname
+                                                    sender = lname
+                                                    NAME_CACHE[sender_udn] = lname
                                             except Exception:
                                                 pass
                             except Exception:
                                 pass
-                        if not leader:
+                        if not sender:
                             meta = sender_res.get("Metadata") or sender_res.get("metadata")
                             if meta:
                                 details = didl_lite.parse(meta) if didl_lite else {}
-                                leader = details.get("publisher") or details.get("author") or details.get("title") or details.get("artist") or None
+                                sender = details.get("publisher") or details.get("author") or details.get("title") or details.get("artist") or None
                 except Exception:
                     pass
         except Exception:
@@ -401,7 +401,7 @@ async def query_device(ip: str, udn: str, name: Optional[str] = None, debug: boo
         "is_songcast": is_songcast_source,
         "is_songcast_grouped": is_songcast_grouped,
         "songcast_transport_state": songcast_transport_state,
-        "songcast_leader": leader,
+        "songcast_sender": sender,
         "songcast_sender_uri": sender_uri_dbg,
         "songcast_sender_meta_head": sender_meta_head_dbg,
         "songcast_status": songcast_status,
@@ -415,7 +415,7 @@ def format_result(r: Dict[str, Optional[str]]) -> str:
 
     Includes:
     - Power state (On/Off), with an "(in standby)" note in the device label when Off.
-    - Songcast Leader when on Songcast; with optional raw Sender fields if tracing.
+    - Songcast Sender when on Songcast; with optional raw Sender fields if tracing.
     - Station (for Radio), Title/Artist, and Album when available.
     """
     device = r.get("device") or "Device"
@@ -429,10 +429,10 @@ def format_result(r: Dict[str, Optional[str]]) -> str:
     if r.get("is_songcast"):
         scheme = r.get("songcast_sender_scheme") or "unknown"
         if r.get("is_songcast_grouped"):
-            if r.get("songcast_leader"):
-                parts.append(f"Songcast Leader: {r['songcast_leader']} ({scheme})")
+            if r.get("songcast_sender"):
+                parts.append(f"Songcast Sender: {r['songcast_sender']} ({scheme})")
             else:
-                parts.append(f"Songcast: Grouped ({scheme}, leader unknown)")
+                parts.append(f"Songcast: Grouped ({scheme}, sender unknown)")
                 if r.get("songcast_sender_uri"):
                     parts.append(f"Sender Uri: {r['songcast_sender_uri']}")
         else:

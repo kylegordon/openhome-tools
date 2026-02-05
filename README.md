@@ -56,8 +56,8 @@ DEVICE_2=172.24.32.142 4c494e4e-0026-0f22-5661-01531488abcd
 DEVICE_3=172.24.32.143 4c494e4e-0026-0f22-5661-01531488def0
 
 # For Songcast grouping
-SONGCAST_MASTER=DEVICE_1
-SONGCAST_MEMBERS=DEVICE_2,DEVICE_3
+SONGCAST_SENDER=DEVICE_1
+SONGCAST_RECEIVERS=DEVICE_2,DEVICE_3
 ```
 
 Format: `DEVICE_N=<IP_ADDRESS> <UDN>`
@@ -103,7 +103,7 @@ devUdn = '4c494e4e-0026-0f22-5661-01531488013f'
 
 ### 2. now_playing.py
 
-Queries multiple Linn DSM devices for their current status and what's playing. Displays power state, source, track information, and Songcast leader relationships.
+Queries multiple Linn DSM devices for their current status and what's playing. Displays power state, source, track information, and Songcast sender relationships.
 
 **Usage:**
 ```bash
@@ -127,7 +127,7 @@ python now_playing.py
 **Output:**
 ```
 Living Room (Radio): Power: On, Station: BBC Radio 6, Track: Song Title — Artist Name
-Kitchen (Songcast): Power: On, Songcast Leader: Living Room (ohz), Track: Song Title — Artist Name
+Kitchen (Songcast): Power: On, Songcast Sender: Living Room (ohz), Track: Song Title — Artist Name
 Bedroom (in standby) (Playlist): Power: Off
 ```
 
@@ -135,8 +135,8 @@ Bedroom (in standby) (Playlist): Power: Off
 - Shows power state (On/Off with standby notation)
 - Displays current source and track metadata
 - For Radio sources, shows station name
-- For Songcast followers, identifies the leader device
-- Caches device names for efficient leader lookups
+- For Songcast receivers, identifies the sender device
+- Caches device names for efficient sender lookups
 - Supports `--trace-songcast` for debugging Songcast connections
 
 **When to use:**
@@ -251,27 +251,27 @@ Source Index Reference:
 
 ### 5. songcast_group.py
 
-Creates a Songcast group with one leader (sender) and one or more followers (receivers) for synchronized multi-room audio.
+Creates a Songcast group with one sender and one or more receivers for synchronized multi-room audio.
 
 **Usage with .env configuration:**
 ```bash
 # Option 1: Using activated virtual environment
 source .venv/bin/activate
-python songcast_group.py [--leader-songcast] [--debug]
+python songcast_group.py [--sender-songcast] [--debug]
 
 # Option 2: Direct virtual environment invocation
-.venv/bin/python songcast_group.py [--leader-songcast] [--debug]
+.venv/bin/python songcast_group.py [--sender-songcast] [--debug]
 ```
 
 **Usage with command-line arguments:**
 ```bash
 source .venv/bin/activate
 python songcast_group.py \
-    --master-ip 172.24.32.211 \
-    --master-udn 4c494e4e-0026-0f22-5661-01531488013f \
-    --slave-ip 172.24.32.142 \
-    --slave-udn 4c494e4e-0026-0f22-5661-01531488abcd \
-    [--leader-songcast] [--debug]
+    --sender-ip 172.24.32.211 \
+    --sender-udn 4c494e4e-0026-0f22-5661-01531488013f \
+    --receiver-ip 172.24.32.142 \
+    --receiver-udn 4c494e4e-0026-0f22-5661-01531488abcd \
+    [--sender-songcast] [--debug]
 ```
 
 **Configuration (.env):**
@@ -280,43 +280,43 @@ DEVICE_1=172.24.32.211 4c494e4e-0026-0f22-5661-01531488013f
 DEVICE_2=172.24.32.142 4c494e4e-0026-0f22-5661-01531488abcd
 DEVICE_3=172.24.32.143 4c494e4e-0026-0f22-5661-01531488def0
 
-SONGCAST_MASTER=DEVICE_1
-SONGCAST_MEMBERS=DEVICE_2,DEVICE_3
+SONGCAST_SENDER=DEVICE_1
+SONGCAST_RECEIVERS=DEVICE_2,DEVICE_3
 ```
 
 **Output:**
 ```
 === Linn OpenHome Songcast Group Creator ===
-Leader: Living Room (172.24.32.211)
-Follower:  172.24.32.142 (172.24.32.142)
-Follower:  172.24.32.143 (172.24.32.143)
+Sender: Living Room (172.24.32.211)
+Receiver:  172.24.32.142 (172.24.32.142)
+Receiver:  172.24.32.143 (172.24.32.143)
 --------------------------------------------------
 
-1. Waking leader from standby...
+1. Waking sender from standby...
 ✓ Living Room woken
 
-=== Configuring follower Kitchen (172.24.32.142) ===
-2. Waking follower from standby...
+=== Configuring receiver Kitchen (172.24.32.142) ===
+2. Waking receiver from standby...
 ✓ Kitchen woken
-3. Ensuring follower source is Songcast...
+3. Ensuring receiver source is Songcast...
 ✓ Kitchen source set to Songcast (index 5)
-4. Joining follower to leader...
+4. Joining receiver to sender...
 ✓ Receiver join attempted via Uri ohz://239.255.255.250:51972/...
 5. Verifying Songcast configuration...
-✓ SUCCESS: Follower actively grouped (ohz/transport active)
+✓ SUCCESS: Receiver actively grouped (ohz/transport active)
 
 ==================================================
-✓ SUCCESS: Songcast group configured for all followers!
+✓ SUCCESS: Songcast group configured for all receivers!
 
-🎵 Play audio on Living Room and it should stream to followers
+🎵 Play audio on Living Room and it should stream to receivers
 ```
 
 **Features:**
 - Automatically wakes devices from standby
-- Switches follower sources to Songcast
+- Switches receiver sources to Songcast
 - Discovers and uses ohz:// URIs for optimal streaming
 - Verifies successful grouping
-- Supports `--leader-songcast` flag to switch leader to Songcast Sender mode
+- Supports `--sender-songcast` flag to switch sender to Songcast Sender mode
 - `--debug` flag for detailed troubleshooting output
 
 **When to use:**
@@ -364,8 +364,8 @@ python now_playing.py
 ```bash
 DEVICE_1=192.168.1.100 4c494e4e-0026-0f22-5661-01531488013f  # Living Room
 DEVICE_2=192.168.1.101 4c494e4e-0026-0f22-5661-01531488abcd  # Kitchen
-SONGCAST_MASTER=DEVICE_1
-SONGCAST_MEMBERS=DEVICE_2
+SONGCAST_SENDER=DEVICE_1
+SONGCAST_RECEIVERS=DEVICE_2
 ```
 
 2. Create the Songcast group:
@@ -374,7 +374,7 @@ source .venv/bin/activate
 python songcast_group.py
 ```
 
-3. Play audio on the leader device (Living Room), and it will stream to followers (Kitchen)
+3. Play audio on the sender device (Living Room), and it will stream to receivers (Kitchen)
 
 ## Troubleshooting
 
@@ -394,8 +394,8 @@ python songcast_group.py
 ### Songcast Grouping Fails
 
 - Ensure all devices are powered on (not in standby)
-- Verify the leader device is playing audio
-- Check that follower devices have Songcast source available
+- Verify the sender device is playing audio
+- Check that receiver devices have Songcast source available
 - Try running with `--debug` flag for detailed output
 - Ensure devices are on the same network subnet
 
@@ -417,8 +417,8 @@ python songcast_group.py
 These tools use the Linn OpenHome protocol, which is built on top of UPnP/SOAP. The main services used are:
 
 - **Product:4** - Device product information, source selection
-- **Receiver:1** - Songcast receiver control (followers)
-- **Sender:1** - Songcast sender control (leaders)
+- **Receiver:1** - Songcast receiver control
+- **Sender:1** - Songcast sender control
 - **Pins:1** - Pin/preset management
 - **Info** - Track metadata retrieval
 
