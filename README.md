@@ -329,6 +329,68 @@ Receiver:  172.24.32.143 (172.24.32.143)
 - Uses both API calls and direct SOAP requests for reliability
 - Polls briefly to verify successful grouping
 
+### 6. songcast_monitor.py (tests/)
+
+**⚡ Test Harness for Command Validation**
+
+Monitors Songcast member devices in real-time using LPEC (Linn Protocol for Eventing and Control) subscriptions. This tool "closes the loop" by validating that commands issued by other scripts are being enacted correctly on real hardware.
+
+**Usage:**
+```bash
+# Basic monitoring
+.venv/bin/python tests/songcast_monitor.py
+
+# With debug output
+.venv/bin/python tests/songcast_monitor.py --debug
+
+# With verbose event logging
+.venv/bin/python tests/songcast_monitor.py --verbose
+```
+
+**Configuration (.env):**
+Monitors the sender and all receivers:
+```bash
+DEVICE_1=172.24.32.211 4c494e4e-0026-0f22-5661-01531488013f
+DEVICE_2=172.24.32.210 4c494e4e-0026-0f22-646e-01560511013f
+DEVICE_3=172.24.32.212 4c494e4e-0026-0f22-3637-01475230013f
+SONGCAST_SENDER=DEVICE_1
+SONGCAST_RECEIVERS=DEVICE_2,DEVICE_3
+```
+
+**Example Output:**
+```
+[12:34:56.789] [DEVICE_2:172.24.32.210] EVENT: ⚡ STATE CHANGE (seq=1):
+[12:34:56.789] [DEVICE_2:172.24.32.210] EVENT:   TransportState: Stopped → Buffering
+[12:34:56.790] [DEVICE_2:172.24.32.210] EVENT:   Sender: None → ohz://239.255.255.250:51972/...
+
+[12:34:58.123] [DEVICE_2:172.24.32.210] EVENT: ⚡ STATE CHANGE (seq=2):
+[12:34:58.123] [DEVICE_2:172.24.32.210] EVENT:   TransportState: Buffering → Playing
+```
+
+**Features:**
+- Real-time event monitoring via LPEC telnet (port 23)
+- Tracks Receiver service state: TransportState, Sender URI, Status
+- Timestamped events with millisecond precision
+- Monitors multiple devices simultaneously
+- Validates Songcast grouping commands
+- Graceful reconnection handling
+- Ctrl+C for clean shutdown
+
+**When to use:**
+- Testing songcast_group.py command execution
+- Debugging multi-room synchronization issues
+- Validating state transitions during automation
+- Developing and testing new control scripts
+- Observing real hardware behavior
+
+**Test Workflow:**
+1. Start monitor in one terminal: `.venv/bin/python tests/songcast_monitor.py --debug`
+2. Execute command in another terminal: `.venv/bin/python songcast_group.py --debug`
+3. Observe real-time state changes in monitor output
+4. Verify expected states: Playing, correct Sender URI, Status=Yes
+
+See [tests/SONGCAST_MONITOR.md](tests/SONGCAST_MONITOR.md) for detailed documentation.
+
 ## Common Workflows
 
 ### Setting Up a New Device
