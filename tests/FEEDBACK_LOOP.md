@@ -197,7 +197,7 @@ exit $TEST_RESULT
 **Solution:**
 ```bash
 # Terminal 1: Monitor
-.venv/bin/python experimental/songcast_monitor.py --debug
+.venv/bin/python tests/songcast_monitor.py --debug
 
 # Terminal 2: Run grouping
 .venv/bin/python songcast_group.py --debug
