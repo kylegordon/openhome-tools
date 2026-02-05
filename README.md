@@ -257,10 +257,10 @@ Creates a Songcast group with one sender and one or more receivers for synchroni
 ```bash
 # Option 1: Using activated virtual environment
 source .venv/bin/activate
-python songcast_group.py [--sender-songcast] [--debug]
+python songcast_group.py [--debug]
 
 # Option 2: Direct virtual environment invocation
-.venv/bin/python songcast_group.py [--sender-songcast] [--debug]
+.venv/bin/python songcast_group.py [--debug]
 ```
 
 **Usage with command-line arguments:**
@@ -271,7 +271,7 @@ python songcast_group.py \
     --sender-udn 4c494e4e-0026-0f22-5661-01531488013f \
     --receiver-ip 172.24.32.142 \
     --receiver-udn 4c494e4e-0026-0f22-5661-01531488abcd \
-    [--sender-songcast] [--debug]
+    [--debug]
 ```
 
 **Configuration (.env):**
@@ -316,7 +316,6 @@ Receiver:  172.24.32.143 (172.24.32.143)
 - Switches receiver sources to Songcast
 - Discovers and uses ohz:// URIs for optimal streaming
 - Verifies successful grouping
-- Supports `--sender-songcast` flag to switch sender to Songcast Sender mode
 - `--debug` flag for detailed troubleshooting output
 
 **When to use:**
