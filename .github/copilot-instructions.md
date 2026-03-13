@@ -4,6 +4,42 @@
 
 Command-line utilities for controlling Linn DSM network audio players via the OpenHome protocol (UPnP/SOAP-based). Core functionality: device discovery, now-playing queries, Pin invocation, source querying, and Songcast multi-room grouping.
 
+## CRITICAL: Research-First Development
+
+**ALWAYS check documentation and existing code BEFORE implementing ANY solution.**
+
+### Pre-Implementation Checklist (MANDATORY)
+
+1. **Search existing codebase** - Use `grep_search` or `semantic_search` to find similar implementations
+   - Check root scripts for working patterns
+   - Check `experimental/` folder for proven solutions (e.g., `oneshot-reboot-ds.py` for device control)
+   - Look for the same service names, action names, or operations
+
+2. **Verify service details** - Don't assume, confirm:
+   - Service names (e.g., `Volkano` for reboot, NOT `Product`)
+   - Action names (e.g., `Reboot` action is in `linn.co.uk-Volkano-1`)
+   - Required parameters and their types
+   - Correct SOAP action URNs
+
+3. **Test thoroughly** - Write tests FIRST, then implement:
+   - Create standalone unit tests for parsing/formatting logic
+   - Test with actual venv python (`/path/to/.venv/bin/python`)
+   - Verify the script runs end-to-end before claiming success
+   - Use output capture workaround (`> output.txt 2>&1; cat output.txt`)
+
+4. **Don't guess** - If uncertain about an API or service:
+   - Search for usage examples in existing scripts
+   - Check external documentation links (see External Documentation section)
+   - Look for comments in existing code explaining why certain approaches are used
+
+### Common Mistakes to Avoid
+
+- ❌ Assuming `Product` service has all device operations (it doesn't, check `Volkano` for reboot)
+- ❌ Using wrong constructor signatures (e.g., `Device(location_url)` NOT `Device(ip, udn)`)
+- ❌ Claiming success without running the actual script
+- ❌ Using async when SOAP requests are simpler and don't require it
+- ❌ Ignoring existing working implementations in `experimental/`
+
 ## Architecture & Key Patterns
 
 ### Device Communication
@@ -36,6 +72,7 @@ Command-line utilities for controlling Linn DSM network audio players via the Op
 - **Sender:1** - Songcast leader (`Sender` returns `Uri`/`Metadata`)
 - **Pins:1** - Presets/favorites (`InvokeId`, `GetIdArray`, `ReadList`)
 - **Info** - Track metadata (`TrackTitle`, `Metatext` for radio stations)
+- **Volkano:1** - Device management (`Reboot` action for rebooting devices - NOT in Product service!)
 
 ### Songcast Multi-Room Architecture
 - **ohz:// URIs** - Preferred multicast streaming protocol (port 51972, `ohz://239.255.255.250:51972/...`)
@@ -109,5 +146,6 @@ Always UUID format: `4c494e4e-0026-0f22-5661-01531488013f` (prefix `4c494e4e` is
 - [songcast_group.py](songcast_group.py) - Complex async workflow, ohz URI handling, Receiver/Sender service usage
 - [now_playing.py](now_playing.py) - Device iteration, Songcast leader resolution, metadata parsing patterns
 - [find_linn_udn.py](find_linn_udn.py) - LPEC telnet communication, UDN extraction from ALIVE messages
+- [experimental/oneshot-reboot-ds.py](experimental/oneshot-reboot-ds.py) - Proven working reboot implementation using Volkano service
 - [.vscode/tasks.json](.vscode/tasks.json) - Preconfigured run commands (note: paths may be absolute and need adjustment)
 
