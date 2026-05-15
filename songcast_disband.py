@@ -12,13 +12,14 @@ Usage:
     .venv/bin/python songcast_disband.py [--debug]
 
 Configuration (.env):
-    DEVICE_1=<IP> <UDN>
-    DEVICE_2=<IP> <UDN>
-    DEVICE_3=<IP> <UDN>
+    DEVICE_1=<IP>             (UDN auto-discovered via LPEC)
+    DEVICE_2=<IP>
+    DEVICE_3=<IP> <UDN>       (explicit UDN also accepted)
 
 Notes:
-- Queries every device for Songcast state and automatically detects
-  which are receivers and which is the sender.
+- Device UDNs are discovered automatically via LPEC (port 23) if not
+  provided in .env. Sender/receiver roles are always auto-detected by
+  querying each device's Songcast state.
 - Uses Receiver.Stop via SOAP to disconnect receivers.
 - Uses Playlist.Stop via SOAP to stop sender playback.
 - No .env sender/receiver role configuration needed; all devices are probed.
@@ -27,6 +28,8 @@ Notes:
 import sys
 import os
 import re
+import socket
+import time
 import argparse
 import requests
 import xml.etree.ElementTree as ET
@@ -38,11 +41,47 @@ except Exception:
 
 ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 
-DEVICE_LINE_RE = re.compile(r"^DEVICE_\d+=(\S+)\s+(\S+)")
+DEVICE_LINE_RE = re.compile(r"^DEVICE_\d+=(\S+)(?:\s+(\S+))?")
 
 
-def load_devices(env_path=None):
-    """Load device IP/UDN pairs from the .env file."""
+def discover_udn(ip, port=23, timeout=3):
+    """Discover the UDN of a Linn DSM device via LPEC (telnet port 23).
+
+    Connects to the device and reads the initial ALIVE Ds message to extract the UDN.
+    Returns the UDN string or None on failure.
+    """
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        sock.connect((ip, port))
+        buffer = ""
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                chunk = sock.recv(4096).decode('utf-8', errors='ignore')
+                if not chunk:
+                    break
+                buffer += chunk
+                for line in buffer.splitlines():
+                    m = re.search(r'^ALIVE\s+Ds\s+([A-Fa-f0-9\-]+)$', line.strip())
+                    if m:
+                        sock.close()
+                        return m.group(1)
+            except socket.timeout:
+                break
+        sock.close()
+    except Exception:
+        pass
+    return None
+
+
+def load_devices(env_path=None, debug=False):
+    """Load device IPs from the .env file and discover UDNs from the devices.
+
+    The .env file can contain either:
+        DEVICE_N=<IP> <UDN>   (UDN used directly)
+        DEVICE_N=<IP>         (UDN discovered via LPEC)
+    """
     path = env_path or ENV_PATH
     devices = []
     with open(path) as f:
@@ -52,7 +91,18 @@ def load_devices(env_path=None):
                 line = line.split('#', 1)[0].strip()
             m = DEVICE_LINE_RE.match(line)
             if m:
-                ip, udn = m.groups()
+                ip = m.group(1)
+                udn = m.group(2)  # May be None if not provided
+                if not udn:
+                    if debug:
+                        print(f"  [debug] Discovering UDN for {ip} via LPEC...")
+                    udn = discover_udn(ip)
+                    if udn:
+                        if debug:
+                            print(f"  [debug] {ip} -> UDN: {udn}")
+                    else:
+                        print(f"  ✗ Failed to discover UDN for {ip} (is device online?)")
+                        continue
                 devices.append({"ip": ip, "udn": udn})
     return devices
 
@@ -448,9 +498,9 @@ def main():
         print(f"✗ .env file not found at {env_path}")
         sys.exit(1)
 
-    devices = load_devices(env_path)
+    devices = load_devices(env_path, debug=args.debug)
     if not devices:
-        print("✗ No devices found in .env")
+        print("✗ No devices found in .env (check IPs and device connectivity)")
         sys.exit(1)
 
     print(f"Loaded {len(devices)} device(s) from {env_path}")

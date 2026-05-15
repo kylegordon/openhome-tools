@@ -27,7 +27,7 @@ import songcast_disband
 # --- .env loading tests ---
 
 class TestLoadDevices:
-    def test_load_valid_env(self, tmp_path):
+    def test_load_valid_env_with_udns(self, tmp_path):
         env = tmp_path / ".env"
         env.write_text(
             "DEVICE_1=172.24.32.211 4c494e4e-0026-0f22-5661-01531488013f # Study\n"
@@ -37,6 +37,42 @@ class TestLoadDevices:
         assert len(devices) == 2
         assert devices[0] == {"ip": "172.24.32.211", "udn": "4c494e4e-0026-0f22-5661-01531488013f"}
         assert devices[1] == {"ip": "172.24.32.210", "udn": "4c494e4e-0026-0f22-646e-01560511013f"}
+
+    @patch("songcast_disband.discover_udn")
+    def test_load_ip_only_discovers_udn(self, mock_discover, tmp_path):
+        mock_discover.return_value = "4c494e4e-0026-0f22-5661-01531488013f"
+        env = tmp_path / ".env"
+        env.write_text("DEVICE_1=172.24.32.211\n")
+        devices = songcast_disband.load_devices(str(env))
+        assert len(devices) == 1
+        assert devices[0] == {"ip": "172.24.32.211", "udn": "4c494e4e-0026-0f22-5661-01531488013f"}
+        mock_discover.assert_called_once_with("172.24.32.211")
+
+    @patch("songcast_disband.discover_udn")
+    def test_load_ip_only_skips_on_discovery_failure(self, mock_discover, tmp_path):
+        mock_discover.return_value = None
+        env = tmp_path / ".env"
+        env.write_text(
+            "DEVICE_1=172.24.32.211\n"
+            "DEVICE_2=172.24.32.210 4c494e4e-0026-0f22-646e-01560511013f\n"
+        )
+        devices = songcast_disband.load_devices(str(env))
+        assert len(devices) == 1
+        assert devices[0]["ip"] == "172.24.32.210"
+
+    @patch("songcast_disband.discover_udn")
+    def test_load_mixed_ip_and_udn(self, mock_discover, tmp_path):
+        mock_discover.return_value = "4c494e4e-discovered"
+        env = tmp_path / ".env"
+        env.write_text(
+            "DEVICE_1=172.24.32.211 4c494e4e-0026-0f22-5661-01531488013f\n"
+            "DEVICE_2=172.24.32.210\n"
+        )
+        devices = songcast_disband.load_devices(str(env))
+        assert len(devices) == 2
+        assert devices[0]["udn"] == "4c494e4e-0026-0f22-5661-01531488013f"
+        assert devices[1]["udn"] == "4c494e4e-discovered"
+        mock_discover.assert_called_once_with("172.24.32.210")
 
     def test_load_env_skips_comments_and_blanks(self, tmp_path):
         env = tmp_path / ".env"
@@ -55,6 +91,13 @@ class TestLoadDevices:
         devices = songcast_disband.load_devices(str(env))
         assert len(devices) == 0
 
+    def test_device_line_regex_ip_only(self):
+        line = "DEVICE_1=172.24.32.211"
+        m = songcast_disband.DEVICE_LINE_RE.match(line)
+        assert m is not None
+        assert m.group(1) == "172.24.32.211"
+        assert m.group(2) is None
+
     def test_device_line_regex(self):
         valid = "DEVICE_1=172.24.32.211 4c494e4e-0026-0f22-5661-01531488013f"
         m = songcast_disband.DEVICE_LINE_RE.match(valid)
@@ -65,6 +108,46 @@ class TestLoadDevices:
     def test_device_line_regex_rejects_invalid(self):
         for line in ["# comment", "", "SONGCAST_SENDER=DEVICE_1", "DEVICE_1="]:
             assert songcast_disband.DEVICE_LINE_RE.match(line) is None
+
+
+# --- UDN discovery tests ---
+
+class TestDiscoverUdn:
+    @patch("songcast_disband.socket.socket")
+    def test_discover_udn_success(self, mock_socket_cls):
+        mock_sock = MagicMock()
+        mock_socket_cls.return_value = mock_sock
+        mock_sock.recv.return_value = b"ALIVE Ds 4c494e4e-0026-0f22-5661-01531488013f\r\n"
+        udn = songcast_disband.discover_udn("172.24.32.211")
+        assert udn == "4c494e4e-0026-0f22-5661-01531488013f"
+        mock_sock.connect.assert_called_once_with(("172.24.32.211", 23))
+
+    @patch("songcast_disband.socket.socket")
+    def test_discover_udn_connection_refused(self, mock_socket_cls):
+        mock_sock = MagicMock()
+        mock_socket_cls.return_value = mock_sock
+        mock_sock.connect.side_effect = ConnectionRefusedError()
+        udn = songcast_disband.discover_udn("172.24.32.211")
+        assert udn is None
+
+    @patch("songcast_disband.socket.socket")
+    def test_discover_udn_timeout(self, mock_socket_cls):
+        import socket as real_socket
+        mock_sock = MagicMock()
+        mock_socket_cls.return_value = mock_sock
+        mock_sock.recv.side_effect = real_socket.timeout()
+        udn = songcast_disband.discover_udn("172.24.32.211", timeout=0.1)
+        assert udn is None
+
+    @patch("songcast_disband.socket.socket")
+    def test_discover_udn_no_alive_message(self, mock_socket_cls):
+        mock_sock = MagicMock()
+        mock_socket_cls.return_value = mock_sock
+        mock_sock.recv.return_value = b"SOME OTHER DATA\r\n"
+        # After first recv, timeout to stop loop
+        mock_sock.recv.side_effect = [b"SOME OTHER DATA\r\n", b""]
+        udn = songcast_disband.discover_udn("172.24.32.211", timeout=0.1)
+        assert udn is None
 
 
 # --- SOAP URL construction tests ---
@@ -436,7 +519,15 @@ if __name__ == "__main__":
     m = songcast_disband.DEVICE_LINE_RE.match(valid)
     assert m is not None
     assert m.group(1) == "172.24.32.211"
-    print("✓ DEVICE_LINE_RE: matches valid device lines")
+    assert m.group(2) == "4c494e4e-0026-0f22-5661-01531488013f"
+    print("✓ DEVICE_LINE_RE: matches IP + UDN lines")
+
+    ip_only = "DEVICE_1=172.24.32.211"
+    m = songcast_disband.DEVICE_LINE_RE.match(ip_only)
+    assert m is not None
+    assert m.group(1) == "172.24.32.211"
+    assert m.group(2) is None
+    print("✓ DEVICE_LINE_RE: matches IP-only lines")
 
     for bad in ["# comment", "", "SONGCAST_SENDER=DEVICE_1", "DEVICE_1="]:
         assert songcast_disband.DEVICE_LINE_RE.match(bad) is None
