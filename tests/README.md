@@ -155,6 +155,39 @@ Validates basic Songcast group join:
 3. **Run script** - see immediate feedback via LPEC verification
 4. **Iterate** based on actual hardware state
 
+### Capturing Firmware Debug Logs
+
+Use `device_logs.py` (project root) to capture the port 2323 firmware debug stream alongside your operations:
+
+```bash
+# Wrap any command with firmware log capture
+.venv/bin/python device_logs.py --around-command ".venv/bin/python songcast_group.py --debug"
+
+# Background capture while you work in another terminal
+.venv/bin/python device_logs.py --background
+# ... run commands, observe ...
+.venv/bin/python device_logs.py --stop
+
+# Filter to specific subsystems
+.venv/bin/python device_logs.py --filter SONGCAST,ERROR --duration 30
+```
+
+Output is written to `captures/` with timestamped filenames and automatic analysis reports (subsystem activity, HTTP status codes, stream URIs, errors).
+
+**Combined workflow** (both LPEC state + firmware debug):
+
+Terminal 1 - LPEC state monitoring:
+```bash
+.venv/bin/python tests/songcast_monitor.py --debug
+```
+
+Terminal 2 - Firmware log capture wrapping the command:
+```bash
+.venv/bin/python device_logs.py --around-command ".venv/bin/python songcast_group.py --debug"
+```
+
+This gives you LPEC-level state transitions (port 23) alongside low-level firmware pipeline diagnostics (port 2323).
+
 ### Debugging Failures
 
 When a command reports success but doesn't work:
@@ -173,16 +206,33 @@ When a command reports success but doesn't work:
 ## VS Code Integration
 
 Use the integrated tasks (Ctrl+Shift+P → Tasks: Run Task):
-- **Run songcast_monitor** - Basic monitoring with debug
-- **Run songcast_monitor (verbose)** - Full verbose logging
+
+**Monitoring & Diagnostics:**
+- **Run songcast_monitor** - Real-time LPEC state monitoring (port 23)
+- **Run songcast_monitor (verbose)** - Full verbose LPEC logging
+- **Capture device logs (60s)** - Firmware debug stream capture (port 2323)
+- **Capture device logs (background)** - Daemonized capture until stopped
+- **Stop device log capture** - Stop background capture and produce reports
+
+**Script Execution:**
+- **Run now_playing** - Quick now-playing query
+- **Run songcast_group join** - Execute Songcast grouping
+
+**Combined (capture + execute):**
+- **Capture logs around now_playing** - Wraps now_playing with firmware capture
+- **Capture logs around songcast_group** - Wraps songcast_group with firmware capture
 
 ## Files
 
-- `songcast_monitor.py` - Main monitoring and test script
+- `songcast_monitor.py` - Main monitoring and test script (LPEC, port 23)
 - `test_songcast_join.json` - Example test scenario
 - `test_workflow.sh` - Automated test workflow script
 - `SONGCAST_MONITOR.md` - Detailed documentation
 - `FEEDBACK_LOOP.md` - Integration and development guide
+
+**Project root (diagnostic tools):**
+- `device_logs.py` - Firmware debug log capture & analysis (port 2323)
+- `lpec_utils.py` - Shared LPEC query functions (port 23)
 
 ## Requirements
 
