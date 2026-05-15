@@ -226,6 +226,26 @@ From `Ds/Receiver` service:
 - Per-device threads: Each monitor runs in dedicated daemon thread
 - Socket timeouts: 30-second read timeout allows for graceful shutdown
 
+## Related Tools
+
+### device_logs.py - Firmware Debug Capture (Port 2323)
+
+While `songcast_monitor.py` monitors high-level state via LPEC (port 23), `device_logs.py` captures low-level firmware debug output from port 2323. These tools are complementary:
+
+| Tool | Port | Data | Use Case |
+|------|------|------|----------|
+| `songcast_monitor.py` | 23 (LPEC) | State variables (TransportState, Sender, Status) | Validate commands executed correctly |
+| `device_logs.py` | 2323 | Firmware internals (HLS, codecs, pipeline, errors) | Diagnose *why* something failed |
+
+**Combined debugging workflow:**
+```bash
+# Terminal 1: High-level state
+.venv/bin/python tests/songcast_monitor.py --debug
+
+# Terminal 2: Low-level firmware + command execution
+.venv/bin/python device_logs.py --filter SONGCAST,ERROR --around-command ".venv/bin/python songcast_group.py"
+```
+
 ## References
 
 - [LPEC Documentation](https://docs.linn.co.uk/wiki/index.php/Developer:LPEC)

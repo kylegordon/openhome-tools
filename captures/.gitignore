@@ -1,0 +1,4 @@
+# Device log captures - local diagnostic data, not tracked
+*.log
+*_analysis.txt
+.device_logs.pid
