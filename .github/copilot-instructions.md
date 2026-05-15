@@ -12,7 +12,7 @@ Command-line utilities for controlling Linn DSM network audio players via the Op
 
 1. **Search existing codebase** - Use `grep_search` or `semantic_search` to find similar implementations
    - Check root scripts for working patterns
-   - Check `experimental/` folder for proven solutions (e.g., `oneshot-reboot-ds.py` for device control)
+   - Search for existing reboot/Volkano-related helpers (e.g., look for "reboot", "Volkano", or `linn.co.uk-Volkano-1` in script names and code)
    - Look for the same service names, action names, or operations
 
 2. **Verify service details** - Don't assume, confirm:
@@ -38,7 +38,7 @@ Command-line utilities for controlling Linn DSM network audio players via the Op
 - ❌ Using wrong constructor signatures (e.g., `Device(location_url)` NOT `Device(ip, udn)`)
 - ❌ Claiming success without running the actual script
 - ❌ Using async when SOAP requests are simpler and don't require it
-- ❌ Ignoring existing working implementations in `experimental/`
+- ❌ Ignoring existing working implementations already in the repository (search before re-implementing)
 
 ## Architecture & Key Patterns
 

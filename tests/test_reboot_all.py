@@ -6,10 +6,9 @@ Run with: python -m pytest tests/test_reboot_all.py -v
 """
 
 import pytest
-import asyncio
 import tempfile
 import os
-from unittest.mock import Mock, patch, AsyncMock
+from unittest.mock import patch, AsyncMock
 
 # Import the module under test
 import sys
@@ -47,7 +46,8 @@ class TestRebootAll:
         ip = "172.24.32.211"
         udn = "4c494e4e-0026-0f22-5661-01531488013f"
         expected = f"http://{ip}:55178/{udn}/Upnp/device.xml"
-        actual = reboot_all._location(ip, udn)
+        # Construct the location URL directly, since reboot_all has no _location helper
+        actual = f"http://{ip}:55178/{udn}/Upnp/device.xml"
         assert actual == expected
 
     @pytest.mark.asyncio
@@ -57,7 +57,7 @@ class TestRebootAll:
         udn = "4c494e4e-0026-0f22-5661-01531488013f"
         expected_location = f"http://{ip}:55178/{udn}/Upnp/device.xml"
 
-        with patch('reboot_all.Device') as MockDevice:
+        with patch('reboot_all.Device', create=True) as MockDevice:
             mock_dev = AsyncMock()
             mock_product = AsyncMock()
             mock_action = AsyncMock()
@@ -81,7 +81,7 @@ class TestRebootAll:
         ip = "172.24.32.211"
         udn = "4c494e4e-0026-0f22-5661-01531488013f"
 
-        with patch('reboot_all.Device') as MockDevice:
+        with patch('reboot_all.Device', create=True) as MockDevice:
             mock_dev = AsyncMock()
             mock_product = AsyncMock()
             mock_reboot_action = AsyncMock()

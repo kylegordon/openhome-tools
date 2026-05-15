@@ -1,3 +1,13 @@
+#!/usr/bin/env python3
+"""
+Reboot all Linn DSM/DS devices defined in the local .env file.
+
+Usage:
+    .venv/bin/python reboot_all.py
+
+The script looks for DEVICE_N entries in .env (e.g. DEVICE_1=<IP> <UDN>)
+and sends a Volkano Reboot command to each device it finds.
+"""
 import os
 import re
 import sys
@@ -20,8 +30,15 @@ def reboot_device(ip, udn):
     
     try:
         resp = requests.post(url, headers=hdrs, data=msg, timeout=5)
-        print(f"Reboot command sent to {ip} ({udn}): [{resp.status_code}]")
-    except Exception as e:
+        if resp.ok:
+            print(f"Reboot command sent to {ip} ({udn}): [{resp.status_code}]")
+        else:
+            body = (resp.text or "").strip()
+            body_snippet = f" Response body: {body[:200]!r}" if body else ""
+            print(
+                f"Failed to reboot {ip} ({udn}): HTTP {resp.status_code}.{body_snippet}"
+            )
+    except requests.RequestException as e:
         print(f"Failed to reboot {ip} ({udn}): {e}")
 
 def main():

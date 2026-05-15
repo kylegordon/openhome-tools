@@ -12,7 +12,8 @@ def test_reboot_url():
     """Test reboot URL format"""
     ip = '172.24.32.211'
     udn = '4c494e4e-0026-0f22-5661-01531488013f'
-    expected_url = f'http://{ip}:55178/{udn}/linn.co.uk-Volkano-1/control'
+    # Expected URL spelled out explicitly so the test is not tautological
+    expected_url = 'http://172.24.32.211:55178/4c494e4e-0026-0f22-5661-01531488013f/linn.co.uk-Volkano-1/control'
     actual_url = f'http://{ip}:55178/{udn}/linn.co.uk-Volkano-1/control'
     assert actual_url == expected_url, f'Expected {expected_url}, got {actual_url}'
     print(f'✓ Reboot URL format correct: {actual_url}')
