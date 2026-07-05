@@ -143,7 +143,8 @@ class LinnSongcastGrouper:
                 sc = await prod.action("SourceCount").async_call()
                 count = int(sc.get("Value") or 8)
                 found = None
-                print("  [DEBUG] Scanning sources for Songcast/Receiver:")
+                if self.debug:
+                    print("  [DEBUG] Scanning sources for Songcast/Receiver:")
                 for i in range(count):
                     try:
                         sres = await prod.action("Source").async_call(Index=i)
@@ -154,20 +155,25 @@ class LinnSongcastGrouper:
                             vis = str(vis_raw).lower()
                         else:
                             vis = str(vis_raw).strip().lower()
-                        print(f"    [index {i}] name='{name}', type='{typ}', visible='{vis}'")
+                        if self.debug:
+                            print(f"    [index {i}] name='{name}', type='{typ}', visible='{vis}'")
                         # Loosen logic: match if 'songcast' in name/type or 'receiver' in type
                         if ("songcast" in name or "songcast" in typ or "receiver" in typ):
                             found = i
-                            print(f"    [DEBUG] -> Candidate Songcast/Receiver source at index {i}")
+                            if self.debug:
+                                print(f"    [DEBUG] -> Candidate Songcast/Receiver source at index {i}")
                             break
                     except Exception as e:
-                        print(f"    [DEBUG] Exception reading source {i}: {e}")
+                        if self.debug:
+                            print(f"    [DEBUG] Exception reading source {i}: {e}")
                         continue
                 if found is None:
-                    print("  [DEBUG] No Songcast/Receiver source found!")
+                    if self.debug:
+                        print("  [DEBUG] No Songcast/Receiver source found!")
                 return found
             except Exception as e:
-                print(f"  [DEBUG] Exception in _find_songcast_index: {e}")
+                if self.debug:
+                    print(f"  [DEBUG] Exception in _find_songcast_index: {e}")
                 return None
 
         async def _get_current_source_info(self, dev):
