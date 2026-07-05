@@ -159,10 +159,9 @@ class LinnSongcastGrouper:
                             print(f"    [index {i}] name='{name}', type='{typ}', visible='{vis}'")
                         # Loosen logic: match if 'songcast' in name/type or 'receiver' in type
                         if ("songcast" in name or "songcast" in typ or "receiver" in typ):
-                            found = i
-                            if self.debug:
-                                print(f"    [DEBUG] -> Candidate Songcast/Receiver source at index {i}")
-                            break
+                            if vis in ("true", "1", "yes"):
+                                return i
+                            found = i if found is None else found
                     except Exception as e:
                         if self.debug:
                             print(f"    [DEBUG] Exception reading source {i}: {e}")
