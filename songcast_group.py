@@ -169,6 +169,7 @@ class LinnSongcastGrouper:
                             if is_visible:
                                 return i
                             found = i if found is None else found
+                    except Exception as e:
                         if self.debug:
                             print(f"    [DEBUG] Exception reading source {i}: {e}")
                         continue
