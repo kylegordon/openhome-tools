@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Command-line Python tools for controlling and monitoring Linn DSM network audio players via the OpenHome protocol (UPnP/SOAP). Functionality: device discovery, now-playing queries, Pin invocation, source querying, Songcast multi-room grouping/disbanding, device rebooting, and firmware debug log capture.
 
-Dependencies are pinned in `requirements.txt` and installed into `.venv` — there is no `pyproject.toml`/packaging beyond that.
+Dependencies are pinned in `requirements.txt` and installed into `.venv`. `pyproject.toml` exists only for `ruff`/`mypy` tool config — there is no packaging beyond that.
 
 **Keep `.github/copilot-instructions.md` in sync with this file.** It's the Copilot-facing equivalent of this document and covers the same architecture/conventions in more granular detail. Whenever you learn something new about this codebase worth persisting (a corrected assumption, a new service/action, a new script, a changed workflow), update both files, not just this one.
 
@@ -25,9 +25,16 @@ Dependencies are pinned in `requirements.txt` and installed into `.venv` — the
 
 # Install dependencies
 .venv/bin/pip install -r requirements.txt
-```
 
-There is no linter/formatter configured in this repo.
+# Lint (must pass — CI blocks on this)
+.venv/bin/ruff check .
+
+# Format check (informational — CI does not block on this)
+.venv/bin/ruff format --check .
+
+# Type check (informational — CI does not block on this)
+.venv/bin/mypy --config-file pyproject.toml .
+```
 
 Terminal output reliability workaround used throughout development: pipe to `output.txt` and read it back rather than relying on live terminal capture: `.venv/bin/python script.py --debug > output.txt 2>&1; cat output.txt`.
 
@@ -39,6 +46,19 @@ Before implementing any device-control change:
 2. **Verify service/action names against real usage**, not assumption — e.g. reboot lives in `Volkano:1` (`linn.co.uk-Volkano-1`), *not* `Product`.
 3. **Don't claim success without running the script end-to-end** against real hardware or the test suite. API call returning 200 does not mean the device did the right thing — cross-check with `lpec_utils.py` / `tests/songcast_monitor.py` state.
 4. Common wrong assumptions to avoid: `Product` service does not have reboot; `openhomedevice.Device` takes a `location_url`, not `(ip, udn)`; most operations don't need `asyncio` if a plain synchronous SOAP `requests` call will do (see `reboot_all.py`, `songcast_disband.py`).
+
+## CRITICAL: Validate before finishing any change
+
+Any local AI coding assistant (Claude Code or otherwise) MUST run the following before considering a change complete or reporting success to the user — this mirrors the CI gate in `.github/workflows/ci.yml`:
+
+```bash
+.venv/bin/ruff check .              # must exit 0 — blocking, same as CI
+.venv/bin/python -m pytest tests/ -v  # must pass — blocking, same as CI
+.venv/bin/ruff format --check .     # informational — review findings, does not block
+.venv/bin/mypy --config-file pyproject.toml .  # informational — review findings, does not block
+```
+
+`ruff check` and `pytest` failures must be fixed before claiming a task done. `ruff format --check` and `mypy` findings should be reviewed but do not need to be resolved before finishing — the codebase has not yet been fully reformatted or type-annotated, and fixing that wholesale is out of scope for most changes.
 
 ## Architecture
 

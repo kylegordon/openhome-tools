@@ -171,7 +171,7 @@ class DeviceMonitor:
         """Subscribe to Ds/Receiver service events"""
         try:
             cmd = "SUBSCRIBE Ds/Receiver\r\n"
-            self.log(f"Subscribing to Ds/Receiver...")
+            self.log("Subscribing to Ds/Receiver...")
             self.sock.sendall(cmd.encode('utf-8'))
             
             # Read initial EVENT 0 with current state
@@ -199,7 +199,7 @@ class DeviceMonitor:
             if self.debug:
                 self.log(f"Subscription response:\n{buffer.strip()}", "DEBUG")
             else:
-                self.log(f"Subscribed successfully - monitoring events")
+                self.log("Subscribed successfully - monitoring events")
                 
             return True
             
@@ -253,9 +253,9 @@ class DeviceMonitor:
             # Abbreviate long URIs
             if len(sender) > 50:
                 if sender.startswith('ohz://'):
-                    parts.append(f"Sender=ohz://...")
+                    parts.append("Sender=ohz://...")
                 elif sender.startswith('ohSongcast://'):
-                    parts.append(f"Sender=ohSongcast://...")
+                    parts.append("Sender=ohSongcast://...")
                 else:
                     parts.append(f"Sender={sender[:30]}...")
             else:
@@ -430,7 +430,7 @@ class DeviceMonitor:
         if self.sock:
             try:
                 self.sock.close()
-            except:
+            except Exception:
                 pass
             self.sock = None
 
@@ -583,7 +583,6 @@ Notes:
     print(f"Configuration loaded from: {args.env}")
     if master:
         print(f"  Sender:   {master['id']} ({master['ip']})")
-    receiver_count = len(all_devices) - (1 if master else 0)
     print(f"  Monitoring: {len(all_devices)} device(s) total")
     for m in all_devices:
         device_type = "sender" if master and m['id'] == master['id'] else "receiver"

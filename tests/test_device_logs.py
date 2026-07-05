@@ -7,7 +7,6 @@ Run with: python -m pytest tests/test_device_logs.py -v
 
 import os
 import sys
-import tempfile
 
 import pytest
 

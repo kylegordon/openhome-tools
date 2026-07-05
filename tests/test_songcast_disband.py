@@ -12,7 +12,6 @@ Or standalone:
 import os
 import sys
 import tempfile
-import re
 from unittest.mock import patch, MagicMock
 
 try:

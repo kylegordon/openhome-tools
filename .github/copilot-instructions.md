@@ -40,6 +40,19 @@ Command-line utilities for controlling Linn DSM network audio players via the Op
 - ❌ Using async when SOAP requests are simpler and don't require it
 - ❌ Ignoring existing working implementations already in the repository (search before re-implementing)
 
+### Pre-Completion Checklist (MANDATORY)
+
+Any local AI coding assistant (GitHub Copilot or otherwise) MUST run the following before considering a change complete or reporting success to the user — this mirrors the CI gate in `.github/workflows/ci.yml`:
+
+```bash
+.venv/bin/ruff check .                          # must exit 0 — blocking, same as CI
+.venv/bin/python -m pytest tests/ -v            # must pass — blocking, same as CI
+.venv/bin/ruff format --check .                 # informational — review findings, does not block
+.venv/bin/mypy --config-file pyproject.toml .   # informational — review findings, does not block
+```
+
+`ruff check` and `pytest` failures must be fixed before claiming a task done. `ruff format --check` and `mypy` findings should be reviewed but do not need to be resolved before finishing — the codebase has not yet been fully reformatted or type-annotated, and fixing that wholesale is out of scope for most changes.
+
 ## Architecture & Key Patterns
 
 ### Device Communication
@@ -53,10 +66,11 @@ Command-line utilities for controlling Linn DSM network audio players via the Op
 
 ### Python Environment & Dependencies
 - **Virtual Environment Required**: All scripts expect `.venv` in project root
-- **Install**: `.venv/bin/pip install -r requirements.txt` (pins `openhomedevice`, `requests`, `pytest`)
+- **Install**: `.venv/bin/pip install -r requirements.txt` (pins `openhomedevice`, `requests`, `pytest`, `ruff`, `mypy`)
 - **Critical Dependencies**: `openhomedevice` (async OpenHome client), `requests` (SOAP), standard lib (`asyncio`, `xml.etree.ElementTree`, `argparse`)
-- **Python Version**: 3.7+ required for async/await support
+- **Python Version**: 3.7+ required for async/await support; CI (`.github/workflows/ci.yml`) targets 3.13 specifically
 - **Invocation Pattern**: `.venv/bin/python script.py` OR `source .venv/bin/activate && python script.py`
+- **Lint/Format/Type-check**: `.venv/bin/ruff check .` (blocking, same as CI), `.venv/bin/ruff format --check .` (informational), `.venv/bin/mypy --config-file pyproject.toml .` (informational) — config lives in `pyproject.toml`
 
 ### Configuration Pattern
 - **`.env` File**: Device configurations stored as `DEVICE_N=<IP> <UDN>` entries

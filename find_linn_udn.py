@@ -119,7 +119,7 @@ def discover_linn_udn(ip_address, port=23, timeout=5):
     finally:
         try:
             sock.close()
-        except:
+        except Exception:
             pass
 
 def main():
@@ -136,14 +136,14 @@ def main():
         print(f"✗ Invalid IP address format: {ip_address}")
         sys.exit(1)
 
-    print(f"=== Linn DSM UDN Discovery ===")
+    print("=== Linn DSM UDN Discovery ===")
     print(f"Target IP: {ip_address}")
     print("-" * 30)
 
     udn, product_room, product_name = discover_linn_udn(ip_address)
 
     if udn or (product_room or product_name):
-        print(f"\n=== Results ===")
+        print("\n=== Results ===")
         print(f"IP Address: {ip_address}")
         if udn:
             print(f"UDN:        {udn}")
@@ -161,7 +161,7 @@ def main():
                 display = product_room
             if display:
                 print(f"Display:    {display}")
-        print(f"\nUse this in your scripts:")
+        print("\nUse this in your scripts:")
         print(f"devIp   = '{ip_address}'")
         if udn:
             print(f"devUdn  = '{udn}'")

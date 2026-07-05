@@ -169,7 +169,7 @@ def main():
     ip = sys.argv[1]
     udn = sys.argv[2]
     
-    print(f"=== Linn OpenHome Pin Player ===")
+    print("=== Linn OpenHome Pin Player ===")
     print(f"IP:  {ip}")
     print(f"UDN: {udn}")
     print("-" * 40)
