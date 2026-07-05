@@ -153,7 +153,7 @@ def main():
     ip = sys.argv[1]
     udn = sys.argv[2]
     
-    print(f"=== Linn Device Source Query ===")
+    print("=== Linn Device Source Query ===")
     print(f"IP:  {ip}")
     print(f"UDN: {udn}")
     print("-" * 40)
@@ -182,7 +182,7 @@ def main():
         
         print(f"[{i}] {source_info['name']} ({source_info['type']}){visible_marker}{current_marker}")
     
-    print(f"\n" + "=" * 40)
+    print("\n" + "=" * 40)
     print("Source Index Reference:")
     print("0 = Analog, 1 = Digital, 2 = Radio")
     print("3 = Playlist, 4 = UPnP, 5 = Songcast")

@@ -423,7 +423,7 @@ def main():
             svc = evt["service"]
             for var, delta in evt["changes"].items():
                 f.write(f"  +{t:7.3f}s  {dev:10s}  {svc}.{var}: {delta['old']} → {delta['new']}\n")
-        f.write(f"\nFinal States:\n")
+        f.write("\nFinal States:\n")
         for dev_id, svcs in sorted(final_states.items()):
             f.write(f"\n  {dev_id}:\n")
             for svc, vals in sorted(svcs.items()):

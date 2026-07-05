@@ -356,7 +356,7 @@ class DeviceLogCapture:
         report.append("")
 
         # Subsystem activity
-        report.append(f"--- Subsystem Activity ---")
+        report.append("--- Subsystem Activity ---")
         if self.subsystem_counts:
             max_count = max(self.subsystem_counts.values())
             bar_width = 40
@@ -370,7 +370,7 @@ class DeviceLogCapture:
         report.append("")
 
         # HTTP status codes
-        report.append(f"--- HTTP Status Codes ---")
+        report.append("--- HTTP Status Codes ---")
         if self.http_status_counts:
             for code, count in sorted(self.http_status_counts.items()):
                 marker = "  " if 200 <= code < 300 else "⚠ "
@@ -380,7 +380,7 @@ class DeviceLogCapture:
         report.append("")
 
         # Stream URIs
-        report.append(f"--- Stream URIs Identified ---")
+        report.append("--- Stream URIs Identified ---")
         if self.stream_uris:
             for uri in self.stream_uris:
                 # Truncate very long URIs for readability
@@ -448,7 +448,7 @@ class CaptureSession:
 
     def start(self):
         """Start all device captures."""
-        print(f"=== Linn DSM Diagnostic Log Capture ===")
+        print("=== Linn DSM Diagnostic Log Capture ===")
         print(f"Devices: {len(self.captors)}")
         print(f"Output: {self.captures_dir}/")
         print(f"{'-' * 50}")
@@ -501,7 +501,7 @@ class CaptureSession:
                 print(f"\nCapturing for {duration}s (Ctrl+C to stop early)...\n")
                 time.sleep(duration)
             else:
-                print(f"\nCapturing indefinitely (Ctrl+C to stop)...\n")
+                print("\nCapturing indefinitely (Ctrl+C to stop)...\n")
                 while True:
                     time.sleep(1)
         except KeyboardInterrupt:
@@ -610,7 +610,7 @@ def run_around_command(command: str, devices: List[Dict[str, str]], port: int = 
                       captures_dir: str = "captures", max_lines: int = 5000,
                       filter_subsystems: Optional[List[str]] = None):
     """Start capture, run a command, stop capture, produce report."""
-    print(f"=== Capture Around Command ===")
+    print("=== Capture Around Command ===")
     print(f"Command: {command}")
     print(f"{'-' * 50}")
 
@@ -627,7 +627,7 @@ def run_around_command(command: str, devices: List[Dict[str, str]], port: int = 
     time.sleep(1)
 
     # Run the command
-    print(f"\n--- Running command ---")
+    print("\n--- Running command ---")
     print(f"$ {command}\n")
 
     try:
@@ -742,7 +742,7 @@ Examples:
 
         session.start()
         print(f"Background capture started (PID {os.getpid()})")
-        print(f"Stop with: .venv/bin/python device_logs.py --stop")
+        print("Stop with: .venv/bin/python device_logs.py --stop")
 
         # Run indefinitely until signaled
         session.wait(duration=None)
