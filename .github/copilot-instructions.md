@@ -53,6 +53,7 @@ Command-line utilities for controlling Linn DSM network audio players via the Op
 
 ### Python Environment & Dependencies
 - **Virtual Environment Required**: All scripts expect `.venv` in project root
+- **Install**: `.venv/bin/pip install -r requirements.txt` (pins `openhomedevice`, `requests`, `pytest`)
 - **Critical Dependencies**: `openhomedevice` (async OpenHome client), `requests` (SOAP), standard lib (`asyncio`, `xml.etree.ElementTree`, `argparse`)
 - **Python Version**: 3.7+ required for async/await support
 - **Invocation Pattern**: `.venv/bin/python script.py` OR `source .venv/bin/activate && python script.py`
