@@ -49,7 +49,7 @@ def test_device_line_regex_invalid():
     for invalid in invalid_lines:
         match = DEVICE_LINE_RE.match(invalid)
         assert match is None, f'Should not match invalid line: {invalid}'
-    print(f'✓ DEVICE_LINE_RE correctly rejects invalid lines')
+    print('✓ DEVICE_LINE_RE correctly rejects invalid lines')
 
 if __name__ == '__main__':
     test_reboot_url()

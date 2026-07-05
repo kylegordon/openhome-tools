@@ -1,0 +1,5 @@
+openhomedevice==2.2
+requests==2.32.5
+pytest==9.0.3
+ruff==0.15.20
+mypy==2.1.0

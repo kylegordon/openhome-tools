@@ -1,5 +1,7 @@
 # OpenHome Tools
 
+[![CI](https://github.com/kylegordon/openhome-tools/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/kylegordon/openhome-tools/actions/workflows/ci.yml)
+
 A collection of Python tools for controlling and monitoring Linn DSM devices using the OpenHome protocol.
 
 ## Overview

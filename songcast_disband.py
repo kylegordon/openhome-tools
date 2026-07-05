@@ -397,7 +397,6 @@ def disband_group(devices, debug=False):
 
     receivers = [d for d in classified if d["role"] in ("receiver", "receiver-idle")]
     senders = [d for d in classified if d["role"] == "sender"]
-    standalone = [d for d in classified if d["role"] == "standalone"]
 
     print("=== Linn OpenHome Songcast Group Disbander ===")
     print(f"Devices found: {len(classified)}")
@@ -443,7 +442,7 @@ def disband_group(devices, debug=False):
 
     # Step 3: Stop sender playback
     if senders:
-        print(f"\n3. Stopping playback on sender(s)...")
+        print("\n3. Stopping playback on sender(s)...")
         for d in senders:
             print(f"  Stopping {d['name']} ({d['ip']})...")
             ok = stop_playlist(d["ip"], d["udn"], debug)

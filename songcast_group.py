@@ -297,12 +297,14 @@ class LinnSongcastGrouper:
                         if isinstance(raw_list, str) and raw_list.strip():
                             root = ET.fromstring(raw_list)
                             items = [el for el in root.iter() if el.tag.endswith('item')]
-                            exact = None; fallbacks = []
+                            exact = None
+                            fallbacks = []
                             for it in items:
                                 title = None
                                 res_uris = []
                                 for ch in it:
-                                    tag = ch.tag; txt = ch.text or ''
+                                    tag = ch.tag
+                                    txt = ch.text or ''
                                     if tag.endswith('title'):
                                         title = txt.strip()
                                     elif tag.endswith('res') and txt.startswith('ohz://'):
@@ -498,14 +500,14 @@ class LinnSongcastGrouper:
                     )
                     
                     if success:
-                        print(f"✓ LPEC Verification: Device reached Playing state")
+                        print("✓ LPEC Verification: Device reached Playing state")
                         print(f"  Final state: {format_state_summary(final_state)}")
                     else:
-                        print(f"⚠ LPEC Verification: Device did not reach Playing state within timeout")
+                        print("⚠ LPEC Verification: Device did not reach Playing state within timeout")
                         if final_state:
                             print(f"  Last state: {format_state_summary(final_state)}")
                         else:
-                            print(f"  Could not query device state (offline or telnet disabled?)")
+                            print("  Could not query device state (offline or telnet disabled?)")
                         all_ok = False
                 else:
                     print("  (LPEC verification skipped - lpec_utils module not available)")
