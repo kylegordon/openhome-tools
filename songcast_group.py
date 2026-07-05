@@ -152,17 +152,23 @@ class LinnSongcastGrouper:
                         name = (sres.get("Name") or sres.get("SystemName") or "").strip().lower()
                         vis_raw = sres.get("Visible", "true")
                         if isinstance(vis_raw, bool):
-                            vis = str(vis_raw).lower()
+                            vis_txt = str(vis_raw).lower()
                         else:
-                            vis = str(vis_raw).strip().lower()
+                            vis_txt = str(vis_raw).strip().lower()
+
+                        if vis_txt in ("false", "0", "no"):
+                            is_visible = False
+                        else:
+                            # Default to visible if value is unexpected/missing
+                            is_visible = True
+
                         if self.debug:
-                            print(f"    [index {i}] name='{name}', type='{typ}', visible='{vis}'")
-                        # Loosen logic: match if 'songcast' in name/type or 'receiver' in type
+                            print(f"    [index {i}] name='{name}', type='{typ}', visible='{vis_txt}'")
+                        # Match if 'songcast' in name/type or 'receiver' in type
                         if ("songcast" in name or "songcast" in typ or "receiver" in typ):
-                            if vis in ("true", "1", "yes"):
+                            if is_visible:
                                 return i
                             found = i if found is None else found
-                    except Exception as e:
                         if self.debug:
                             print(f"    [DEBUG] Exception reading source {i}: {e}")
                         continue
