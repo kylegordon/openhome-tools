@@ -39,6 +39,7 @@ import sys
 import argparse
 import asyncio
 import xml.etree.ElementTree as ET
+from xml.sax.saxutils import escape as xml_escape
 import requests
 import os
 try:
@@ -282,18 +283,23 @@ class LinnSongcastGrouper:
                 candidate_uris.append(uri)
 
                 if metadata is None:
-                    title = f"{sender_room or ''} - {sender_name or ''}".strip(" -")
+                    # Build metadata matching the Linn App's format:
+                    # <dc:title>Linn {Room}</dc:title>, <res> with ohz URI,
+                    # <upnp:albumArtURI> with device icon
+                    title = f"Linn {sender_room}" if sender_room else (sender_name or '')
+                    ohz_for_meta = f"ohz://239.255.255.250:51972/{sender_udn}"
+                    icon_url = f"http://{self.sender_ip}:55178/{sender_udn}/Upnp/resource/res/icons/1022.png"
                     metadata = (
-                        "<?xml version=\"1.0\"?>"
-                        "<DIDL-Lite xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\">"
-                        "<item id=\"ohSongcast\" parentID=\"0\" restricted=\"true\">"
-                        f"<dc:title>{title}</dc:title>"
-                        "<upnp:class>object.item.audioItem</upnp:class>"
-                        f"<upnp:artist>{sender_name or ''}</upnp:artist>"
-                        f"<upnp:album>{sender_room or ''}</upnp:album>"
-                        "<dc:publisher>OpenHome</dc:publisher>"
-                        "</item>"
-                        "</DIDL-Lite>"
+                        '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/"'
+                        ' xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"'
+                        ' xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/">'
+                        '<item id="0" restricted="True">'
+                        f'<dc:title>{xml_escape(title)}</dc:title>'
+                        f'<res protocolInfo="ohz:*:*:u">{xml_escape(ohz_for_meta)}</res>'
+                        f'<upnp:albumArtURI>{xml_escape(icon_url)}</upnp:albumArtURI>'
+                        '<upnp:class>object.item.audioItem</upnp:class>'
+                        '</item>'
+                        '</DIDL-Lite>'
                     )
 
                 # Discover ohz via Receiver.Senders (short retries)
@@ -340,31 +346,45 @@ class LinnSongcastGrouper:
                         except Exception:
                             pass
                         if str(cand).lower().startswith("ohz://"):
-                            # Prefer SOAP for ohz SetSender/Play to bypass metadata quirks
+                            # SOAP SetSender with proper metadata (matching Linn App format)
+                            meta_escaped = xml_escape(metadata or "")
                             try:
                                 url = f"http://{receiver_ip}:55178/{receiver_udn}/av.openhome.org-Receiver-1/control"
                                 hdrs_set = {
                                     "SOAPACTION": '"urn:av-openhome-org:service:Receiver:1#SetSender"',
                                     "Content-Type": 'text/xml; charset="utf-8"'
                                 }
-                                msg_set = f"""<?xml version=\"1.0\" encoding=\"utf-8\"?>
-    <s:Envelope s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\" xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\">\n    <s:Body>\n        <u:SetSender xmlns:u=\"urn:av-openhome-org:service:Receiver:1\">\n            <Uri>{cand}</Uri>\n            <Metadata></Metadata>\n        </u:SetSender>\n    </s:Body>\n</s:Envelope>"""
+                                msg_set = (
+                                    '<?xml version="1.0" encoding="utf-8"?>'
+                                    '<s:Envelope s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"'
+                                    ' xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">'
+                                    '<s:Body>'
+                                    '<u:SetSender xmlns:u="urn:av-openhome-org:service:Receiver:1">'
+                                    f'<Uri>{xml_escape(cand)}</Uri>'
+                                    f'<Metadata>{meta_escaped}</Metadata>'
+                                    '</u:SetSender>'
+                                    '</s:Body>'
+                                    '</s:Envelope>'
+                                )
                                 requests.post(url, headers=hdrs_set, data=msg_set, timeout=3)
                                 hdrs_play = {
                                     "SOAPACTION": '"urn:av-openhome-org:service:Receiver:1#Play"',
                                     "Content-Type": 'text/xml; charset="utf-8"'
                                 }
-                                msg_play = """<?xml version="1.0" encoding="utf-8"?>
-    <s:Envelope s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/" xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
-        <s:Body>
-            <u:Play xmlns:u="urn:av-openhome-org:service:Receiver:1"></u:Play>
-        </s:Body>
-    </s:Envelope>"""
+                                msg_play = (
+                                    '<?xml version="1.0" encoding="utf-8"?>'
+                                    '<s:Envelope s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"'
+                                    ' xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">'
+                                    '<s:Body>'
+                                    '<u:Play xmlns:u="urn:av-openhome-org:service:Receiver:1"/>'
+                                    '</s:Body>'
+                                    '</s:Envelope>'
+                                )
                                 requests.post(url, headers=hdrs_play, data=msg_play, timeout=3)
                             except Exception:
                                 # Fallback to API if SOAP fails
                                 try:
-                                    await recv.action("SetSender").async_call(Uri=cand, Metadata="")
+                                    await recv.action("SetSender").async_call(Uri=cand, Metadata=metadata or "")
                                     await recv.action("Play").async_call()
                                 except Exception:
                                     pass
@@ -398,35 +418,14 @@ class LinnSongcastGrouper:
                             break
                     except Exception:
                         continue
-                print(f"✓ Receiver join attempted via Uri {uri}")
+                if ok:
+                    print(f"✓ Receiver joined via Uri {uri}")
+                else:
+                    print(f"⚠ Receiver join attempted via Uri {uri} (not confirmed playing)")
                 try:
                     sres_final = await recv.action("Sender").async_call()
                     uri_final = (sres_final.get("Uri") or sres_final.get("uri") or "")
                     print(f"Final Receiver.Sender Uri: {uri_final}")
-                except Exception:
-                    pass
-                # SOAP fallback: force ohz SetSender + Play
-                try:
-                    url = f"http://{receiver_ip}:55178/{receiver_udn}/av.openhome.org-Receiver-1/control"
-                    default_ohz = f"ohz://239.255.255.250:51972/{sender_udn}"
-                    hdrs_set = {
-                        "SOAPACTION": '"urn:av-openhome-org:service:Receiver:1#SetSender"',
-                        "Content-Type": 'text/xml; charset="utf-8"'
-                    }
-                    msg_set = f"""<?xml version=\"1.0\" encoding=\"utf-8\"?>
-    <s:Envelope s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\" xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\">\n    <s:Body>\n        <u:SetSender xmlns:u=\"urn:av-openhome-org:service:Receiver:1\">\n            <Uri>{default_ohz}</Uri>\n            <Metadata></Metadata>\n        </u:SetSender>\n    </s:Body>\n</s:Envelope>"""
-                    requests.post(url, headers=hdrs_set, data=msg_set, timeout=3)
-                    hdrs_play = {
-                        "SOAPACTION": '"urn:av-openhome-org:service:Receiver:1#Play"',
-                        "Content-Type": 'text/xml; charset="utf-8"'
-                    }
-                    msg_play = """<?xml version="1.0" encoding="utf-8"?>
-    <s:Envelope s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/" xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
-        <s:Body>
-            <u:Play xmlns:u="urn:av-openhome-org:service:Receiver:1"></u:Play>
-        </s:Body>
-    </s:Envelope>"""
-                    requests.post(url, headers=hdrs_play, data=msg_play, timeout=3)
                 except Exception:
                     pass
                 return True

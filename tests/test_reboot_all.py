@@ -8,7 +8,7 @@ Run with: python -m pytest tests/test_reboot_all.py -v
 import pytest
 import tempfile
 import os
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch, MagicMock
 
 # Import the module under test
 import sys
@@ -41,83 +41,77 @@ class TestRebootAll:
             match = reboot_all.DEVICE_LINE_RE.match(line)
             assert match is None, f"Should not match: {line}"
 
-    def test_location_url_format(self):
-        """Test that location URL is correctly formatted"""
+    def test_volkano_control_url_format(self):
+        """Test that the Volkano service control URL is correctly formatted"""
         ip = "172.24.32.211"
         udn = "4c494e4e-0026-0f22-5661-01531488013f"
-        expected = f"http://{ip}:55178/{udn}/Upnp/device.xml"
-        # Construct the location URL directly, since reboot_all has no _location helper
-        actual = f"http://{ip}:55178/{udn}/Upnp/device.xml"
+        expected = f"http://{ip}:55178/{udn}/linn.co.uk-Volkano-1/control"
+        actual = f"http://{ip}:55178/{udn}/linn.co.uk-Volkano-1/control"
         assert actual == expected
 
-    @pytest.mark.asyncio
-    async def test_reboot_device_creates_correct_location(self):
-        """Test that reboot_device creates Device with correct location URL"""
+    def test_reboot_device_sends_soap_request(self):
+        """Test that reboot_device sends a SOAP POST to the Volkano service"""
         ip = "172.24.32.211"
         udn = "4c494e4e-0026-0f22-5661-01531488013f"
-        expected_location = f"http://{ip}:55178/{udn}/Upnp/device.xml"
+        expected_url = f"http://{ip}:55178/{udn}/linn.co.uk-Volkano-1/control"
 
-        with patch('reboot_all.Device', create=True) as MockDevice:
-            mock_dev = AsyncMock()
-            mock_product = AsyncMock()
-            mock_action = AsyncMock()
-            
-            MockDevice.return_value = mock_dev
-            mock_dev.init = AsyncMock()
-            mock_dev.device.service_id.return_value = mock_product
-            mock_product.action.return_value = mock_action
-            mock_action.async_call = AsyncMock()
+        with patch('reboot_all.requests.post') as mock_post:
+            mock_resp = MagicMock()
+            mock_resp.ok = True
+            mock_resp.status_code = 200
+            mock_post.return_value = mock_resp
 
-            await reboot_all.reboot_device(ip, udn)
-            
-            # Verify Device was created with correct location
-            MockDevice.assert_called_once_with(expected_location)
-            # Verify init was called
-            mock_dev.init.assert_called_once()
+            reboot_all.reboot_device(ip, udn)
 
-    @pytest.mark.asyncio
-    async def test_reboot_device_calls_reboot_action(self):
-        """Test that reboot_device calls the Reboot action"""
+            mock_post.assert_called_once()
+            call_args = mock_post.call_args
+            assert call_args[0][0] == expected_url
+            assert 'Volkano:1#Reboot' in call_args[1]['headers']['SOAPACTION']
+            assert 'u:Reboot' in call_args[1]['data']
+
+    def test_reboot_device_handles_http_error(self):
+        """Test that reboot_device handles non-OK HTTP responses gracefully"""
         ip = "172.24.32.211"
         udn = "4c494e4e-0026-0f22-5661-01531488013f"
 
-        with patch('reboot_all.Device', create=True) as MockDevice:
-            mock_dev = AsyncMock()
-            mock_product = AsyncMock()
-            mock_reboot_action = AsyncMock()
-            mock_standby_action = AsyncMock()
-            
-            MockDevice.return_value = mock_dev
-            mock_dev.init = AsyncMock()
-            mock_dev.device.service_id.return_value = mock_product
-            
-            def mock_action(action_name):
-                if action_name == "Reboot":
-                    return mock_reboot_action
-                elif action_name == "SetStandby":
-                    return mock_standby_action
-                return AsyncMock()
-            
-            mock_product.action = mock_action
-            mock_reboot_action.async_call = AsyncMock()
-            mock_standby_action.async_call = AsyncMock()
+        with patch('reboot_all.requests.post') as mock_post:
+            mock_resp = MagicMock()
+            mock_resp.ok = False
+            mock_resp.status_code = 500
+            mock_resp.text = "Internal Server Error"
+            mock_post.return_value = mock_resp
 
-            await reboot_all.reboot_device(ip, udn)
-            
-            # Verify Reboot action was called
-            mock_reboot_action.async_call.assert_called_once()
+            # Should not raise - prints error message
+            reboot_all.reboot_device(ip, udn)
 
-    @pytest.mark.asyncio
-    async def test_reboot_device_handles_exceptions(self):
-        """Test that reboot_device handles exceptions gracefully"""
+    def test_reboot_device_handles_connection_error(self):
+        """Test that reboot_device handles connection failures gracefully"""
+        import requests as real_requests
         ip = "172.24.32.211"
         udn = "4c494e4e-0026-0f22-5661-01531488013f"
 
-        with patch('reboot_all.Device') as MockDevice:
-            MockDevice.side_effect = Exception("Connection failed")
-            
-            # Should not raise exception, just print error
-            await reboot_all.reboot_device(ip, udn)
+        with patch('reboot_all.requests.post') as mock_post:
+            mock_post.side_effect = real_requests.ConnectionError("Connection refused")
+
+            # Should not raise - prints error message
+            reboot_all.reboot_device(ip, udn)
+
+    def test_reboot_device_soap_action_header(self):
+        """Test that the SOAPACTION header uses the correct Volkano URN"""
+        ip = "172.24.32.211"
+        udn = "4c494e4e-0026-0f22-5661-01531488013f"
+
+        with patch('reboot_all.requests.post') as mock_post:
+            mock_resp = MagicMock()
+            mock_resp.ok = True
+            mock_resp.status_code = 200
+            mock_post.return_value = mock_resp
+
+            reboot_all.reboot_device(ip, udn)
+
+            call_args = mock_post.call_args
+            headers = call_args[1]['headers']
+            assert headers['SOAPACTION'] == '"urn:linn-co-uk:service:Volkano:1#Reboot"'
 
     def test_parse_env_file(self):
         """Test parsing .env file with multiple devices"""
@@ -144,6 +138,40 @@ SOME_OTHER_VAR=value
             assert devices[1] == ("172.24.32.210", "4c494e4e-0026-0f22-646e-01560511013f")
         finally:
             os.unlink(temp_env)
+
+    def test_main_missing_env(self, tmp_path):
+        """Test that main exits when .env is missing"""
+        with patch.object(reboot_all, 'ENV_PATH', str(tmp_path / 'nonexistent.env')):
+            with pytest.raises(SystemExit) as exc_info:
+                reboot_all.main()
+            assert exc_info.value.code == 1
+
+    def test_main_empty_env(self, tmp_path):
+        """Test that main exits when .env has no DEVICE lines"""
+        env_file = tmp_path / ".env"
+        env_file.write_text("# only comments\nSONGCAST_SENDER=DEVICE_1\n")
+        with patch.object(reboot_all, 'ENV_PATH', str(env_file)):
+            with pytest.raises(SystemExit) as exc_info:
+                reboot_all.main()
+            assert exc_info.value.code == 1
+
+    def test_main_reboots_all_devices(self, tmp_path):
+        """Test that main calls reboot_device for every device in .env"""
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "DEVICE_1=172.24.32.211 4c494e4e-0026-0f22-5661-01531488013f\n"
+            "DEVICE_2=172.24.32.210 4c494e4e-0026-0f22-646e-01560511013f\n"
+        )
+        with patch.object(reboot_all, 'ENV_PATH', str(env_file)):
+            with patch.object(reboot_all, 'reboot_device') as mock_reboot:
+                reboot_all.main()
+                assert mock_reboot.call_count == 2
+                mock_reboot.assert_any_call(
+                    "172.24.32.211", "4c494e4e-0026-0f22-5661-01531488013f"
+                )
+                mock_reboot.assert_any_call(
+                    "172.24.32.210", "4c494e4e-0026-0f22-646e-01560511013f"
+                )
 
 
 if __name__ == "__main__":

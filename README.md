@@ -11,6 +11,9 @@ This repository provides command-line utilities to interact with Linn DSM networ
 - Play specific Pins (favorites/presets)
 - List available sources
 - Create Songcast groups for multi-room audio
+- Disband Songcast groups and return devices to standalone
+- Reboot all devices
+- Capture firmware debug logs for diagnostics
 
 ## Prerequisites
 
@@ -329,7 +332,160 @@ Receiver:  172.24.32.143 (172.24.32.143)
 - Uses both API calls and direct SOAP requests for reliability
 - Polls briefly to verify successful grouping
 
-### 6. songcast_monitor.py (tests/)
+### 6. songcast_disband.py
+
+Disbands an active Songcast group and returns all devices to standalone mode. Auto-detects sender and receiver roles by probing each device's state — no manual role configuration needed.
+
+**Usage:**
+```bash
+# Using .env configuration (auto-detects roles)
+.venv/bin/python songcast_disband.py [--debug]
+
+# Specify a different .env file
+.venv/bin/python songcast_disband.py --env /path/to/.env
+```
+
+**Configuration (.env):**
+```bash
+# UDN can be explicit or auto-discovered via LPEC
+DEVICE_1=172.24.32.211 4c494e4e-0026-0f22-5661-01531488013f
+DEVICE_2=172.24.32.210 4c494e4e-0026-0f22-646e-01560511013f
+DEVICE_3=172.24.32.212
+```
+
+**Example Output:**
+```
+=== Linn OpenHome Songcast Group Disbander ===
+Devices found: 3
+  Study (172.24.32.211): sender
+  Tin Hut (172.24.32.210): receiver
+  Living Room (172.24.32.212): receiver
+--------------------------------------------------
+
+1. Disconnecting 2 receiver(s) from Songcast group...
+  ✓ Tin Hut receiver cleared and stopped
+  ✓ Living Room receiver cleared and stopped
+
+2. Switching 2 receiver(s) to standalone source...
+  ✓ Tin Hut switched from Songcast (idx 3) to Playlist (idx 0)
+  ✓ Living Room switched from Songcast (idx 3) to Playlist (idx 0)
+
+3. Stopping playback on sender(s)...
+  ✓ Study playback stopped
+
+4. Verifying devices are standalone...
+  ✓ Tin Hut: standalone (source=Playlist, no sender URI)
+  ✓ Living Room: standalone (source=Playlist, no sender URI)
+  ✓ Study: sender (playback stopped)
+
+==================================================
+✓ SUCCESS: All devices returned to standalone mode
+```
+
+**Features:**
+- Auto-discovers UDNs via LPEC when not provided in `.env`
+- Auto-detects sender/receiver/standalone roles (no `SONGCAST_SENDER`/`SONGCAST_RECEIVERS` needed)
+- Clears receiver sender URIs via `Receiver.SetSender(empty)` — fixes "zombie" receivers
+- Switches receivers from Songcast source back to Playlist
+- Stops sender playback via `Playlist.Stop`
+- Verifies all devices return to standalone state
+- `--debug` flag for detailed SOAP/LPEC output
+
+**When to use:**
+- Breaking up a multi-room Songcast group
+- Returning devices to standalone before reconfiguring
+- Troubleshooting stuck receivers that appear grouped but aren't playing
+
+### 7. reboot_all.py
+
+Reboots all Linn DSM/DS devices defined in the `.env` file using the Volkano service.
+
+**Usage:**
+```bash
+.venv/bin/python reboot_all.py
+```
+
+**Configuration (.env):**
+Requires `DEVICE_N=<IP> <UDN>` entries (both IP and UDN required).
+
+**Example Output:**
+```
+Reboot command sent to 172.24.32.211 (4c494e4e-0026-0f22-5661-01531488013f): [200]
+Reboot command sent to 172.24.32.210 (4c494e4e-0026-0f22-646e-01560511013f): [200]
+```
+
+**Notes:**
+- Uses the `linn.co.uk-Volkano-1` service (NOT `Product`) for reboot
+- Synchronous SOAP requests — no async/openhomedevice dependency
+- Devices will restart and temporarily go offline
+
+**When to use:**
+- Applying firmware updates
+- Recovering from stuck device states
+- Bulk device restart
+
+### 8. device_logs.py
+
+Captures the firmware debug log stream from port 2323 on Linn DSM devices. Provides real-time log categorization, multi-device concurrent capture, and post-capture analysis reports.
+
+**Usage:**
+```bash
+# All .env devices, default 60s
+.venv/bin/python device_logs.py
+
+# Single device
+.venv/bin/python device_logs.py 172.24.32.211
+
+# Custom duration
+.venv/bin/python device_logs.py --duration 120
+
+# Wrap a command with log capture
+.venv/bin/python device_logs.py --around-command ".venv/bin/python now_playing.py --debug"
+
+# Background daemonized capture
+.venv/bin/python device_logs.py --background
+.venv/bin/python device_logs.py --stop
+
+# Filter to specific subsystems
+.venv/bin/python device_logs.py --filter SONGCAST,ERROR
+```
+
+**Options:**
+- `--duration` / `-d` — Capture duration in seconds (default: 60)
+- `--port` — Override target port (default: 2323)
+- `--output-dir` / `-o` — Output directory (default: `captures/`)
+- `--max-lines` — Max lines per capture file before rotation (default: 5000)
+- `--filter` / `-f` — Comma-separated subsystem filter (e.g., `HLS,ERROR,SONGCAST`)
+- `--around-command` — Capture logs while running a command, then stop
+- `--background` — Daemonize capture with PID file
+- `--stop` — Stop a background capture
+- `--debug` — Enable debug output
+
+**Log Subsystem Categories:**
+- `HLS` — HLS playlist parsing, segment fetches
+- `HTTP` — URI loader requests, status codes
+- `PIPELINE` — Audio pipeline state reports
+- `CONTAINER` — Media container parsing (MPEG-4, MPEG-TS, ID3v2)
+- `SONGCAST` — Songcast/OHM receiver/sender activity
+- `CODEC` — Codec detection and decoding
+- `VOLUME` — Volume/mute changes
+- `TRANSPORT` — Playback transport state changes
+- `ERROR` — Error conditions
+- `OTHER` — Unclassified lines
+
+**Output:**
+```
+captures/DEVICE_1_20260515_143022.log           # Raw timestamped capture
+captures/DEVICE_1_20260515_143022_analysis.txt  # Analysis report
+```
+
+**When to use:**
+- Diagnosing playback issues (HLS failures, codec problems)
+- Observing firmware-level behavior during Songcast operations
+- Capturing evidence for bug reports
+- Correlating with LPEC state monitoring
+
+### 9. songcast_monitor.py (tests/)
 
 **⚡ Test Harness for Command Validation**
 
@@ -437,6 +593,48 @@ python songcast_group.py
 
 3. Play audio on the sender device (Living Room), and it will stream to receivers (Kitchen)
 
+### Breaking Up a Multi-Room Setup
+
+Disband the Songcast group and return all devices to standalone:
+```bash
+source .venv/bin/activate
+python songcast_disband.py
+```
+
+No additional configuration needed — sender/receiver roles are auto-detected.
+
+### Capturing Firmware Logs
+
+Wrap any command with firmware debug log capture for diagnostics:
+```bash
+.venv/bin/python device_logs.py --around-command ".venv/bin/python songcast_group.py --debug"
+```
+
+Or capture in the background while you work:
+```bash
+.venv/bin/python device_logs.py --background
+# ... run commands, observe ...
+.venv/bin/python device_logs.py --stop
+```
+
+## Shared Utilities
+
+### lpec_utils.py
+
+Shared LPEC helper functions used by `songcast_group.py` and `tests/songcast_monitor.py` for real-time device state verification.
+
+**Functions:**
+- `query_receiver_state(ip)` — Query Receiver service state via LPEC
+- `wait_for_state(ip, expected, timeout)` — Poll until device reaches expected state
+- `check_transport_playing(ip)` — Quick check if device is Playing/Buffering
+- `check_sender_uri(ip, scheme)` — Check if sender URI matches expected scheme
+- `format_state_summary(state)` — Format state dict into human-readable string
+
+**Standalone test:**
+```bash
+.venv/bin/python lpec_utils.py 172.24.32.210
+```
+
 ## Troubleshooting
 
 ### Device Not Found
@@ -482,11 +680,14 @@ These tools use the Linn OpenHome protocol, which is built on top of UPnP/SOAP. 
 - **Sender:1** - Songcast sender control
 - **Pins:1** - Pin/preset management
 - **Info** - Track metadata retrieval
+- **Playlist:1** - Playlist/playback control (used to stop sender playback)
+- **Volkano:1** - Linn-specific device management (reboot) — `linn.co.uk-Volkano-1`
 
 ### Communication Methods
 
 - **SOAP over HTTP** - Primary method for control commands (port 55178)
-- **Telnet** - Used for UDN discovery (port 23)
+- **LPEC (Linn Protocol for Eventing and Control)** - Telnet-based protocol for real-time state subscriptions and device discovery (port 23)
+- **Firmware Debug Stream** - Read-only diagnostic log stream from internal C++ media pipeline (port 2323)
 - **ohz:// protocol** - Multicast streaming for Songcast (port 51972)
 - **ohSongcast:// descriptors** - Alternative Songcast connection method
 

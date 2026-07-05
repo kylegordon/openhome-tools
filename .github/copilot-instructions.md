@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Command-line utilities for controlling Linn DSM network audio players via the OpenHome protocol (UPnP/SOAP-based). Core functionality: device discovery, now-playing queries, Pin invocation, source querying, and Songcast multi-room grouping.
+Command-line utilities for controlling Linn DSM network audio players via the OpenHome protocol (UPnP/SOAP-based). Core functionality: device discovery, now-playing queries, Pin invocation, source querying, Songcast multi-room grouping/disbanding, device rebooting, and firmware debug log capture.
 
 ## CRITICAL: Research-First Development
 
@@ -44,7 +44,10 @@ Command-line utilities for controlling Linn DSM network audio players via the Op
 
 ### Device Communication
 - **Protocol Stack**: OpenHome over UPnP/SOAP + LPEC (Linn Protocol for Eventing and Control)
-- **Primary Port**: 55178 (HTTP/SOAP control), 23 (telnet/LPEC for discovery)
+- **Port 55178**: HTTP/SOAP control for OpenHome services
+- **Port 23**: LPEC telnet — used for ALIVE messages, subscriptions, real-time events
+- **Port 2323**: Firmware debug log stream (read-only diagnostic output from internal C++ media pipeline)
+- **Port 51972**: ohz:// multicast streaming (Songcast)
 - **Device Identification**: IP address + UDN (Unique Device Name, UUID format)
 - **URL Structure**: `http://<IP>:55178/<UDN>/<service-path>/control`
 
@@ -56,7 +59,7 @@ Command-line utilities for controlling Linn DSM network audio players via the Op
 
 ### Configuration Pattern
 - **`.env` File**: Device configurations stored as `DEVICE_N=<IP> <UDN>` entries
-- **Songcast Config**: `SONGCAST_MASTER=DEVICE_1` and `SONGCAST_MEMBERS=DEVICE_2,DEVICE_3`
+- **Songcast Config**: `SONGCAST_SENDER=DEVICE_1` and `SONGCAST_RECEIVERS=DEVICE_2,DEVICE_3`
 - **Loading**: Scripts parse `.env` at startup, support both env-driven and CLI argument modes
 - **Example**: `DEVICE_1=172.24.32.211 4c494e4e-0026-0f22-5661-01531488013f`
 
@@ -67,18 +70,20 @@ Command-line utilities for controlling Linn DSM network audio players via the Op
 - **Timeouts**: Wrap service calls in `asyncio.wait_for(call, timeout=2.0)` for Songcast/Receiver queries
 
 ### Key OpenHome Services
-- **Product:4** - Source selection (`SourceCount`, `Source`, `SetSourceIndex`), standby control
-- **Receiver:1** - Songcast follower (`SetSender`, `Sender`, `TransportState`, `Status`)
-- **Sender:1** - Songcast leader (`Sender` returns `Uri`/`Metadata`)
+- **Product:4** - Source selection (`SourceCount`, `Source`, `SetSourceIndex`, `SourceIndex`), standby control
+- **Receiver:1** - Songcast follower (`SetSender`, `Sender`, `TransportState`, `Status`, `Stop`, `Play`)
+- **Sender:1** - Songcast leader (`Sender` returns `Uri`/`Metadata`, `Status` returns Enabled/Disabled)
 - **Pins:1** - Presets/favorites (`InvokeId`, `GetIdArray`, `ReadList`)
 - **Info** - Track metadata (`TrackTitle`, `Metatext` for radio stations)
-- **Volkano:1** - Device management (`Reboot` action for rebooting devices - NOT in Product service!)
+- **Playlist:1** - Playback control (`Stop` used to stop sender playback during disband)
+- **Volkano:1** - Linn-specific device management (`Reboot` action - NOT in Product service!) — service path: `linn.co.uk-Volkano-1`
 
 ### Songcast Multi-Room Architecture
 - **ohz:// URIs** - Preferred multicast streaming protocol (port 51972, `ohz://239.255.255.250:51972/...`)
 - **ohSongcast:// URIs** - Fallback descriptor format with room/name query params
 - **Leader Discovery**: Query follower's `Receiver.Sender()` Uri, parse for leader UDN/room/name
 - **Grouping Flow**: Wake devices → Set follower source to Songcast (find index via `Product.Source`) → Call `Receiver.SetSender(Uri, Metadata)` → Poll `TransportState` for "playing"
+- **Disbanding Flow**: `Receiver.SetSender(Uri="", Metadata="")` → `Receiver.Stop` → `Product.SetSourceIndex(0)` to switch from Songcast to Playlist → `Playlist.Stop` on sender. Key insight: `Receiver.Stop` alone is insufficient for zombie receivers still bound to an ohz:// URI — must clear the URI first.
 - **Verification**: Check `Sender` Uri scheme is `ohz` OR `TransportState` is "playing"/"buffering"
 
 ## Development Workflows
@@ -105,8 +110,11 @@ cat output.txt
 - **Error Handling**: Catch exceptions per-service-call, provide fallback values (name→IP, metadata→empty)
 
 ### File Organization
-- **Root Scripts**: Main CLI tools (`find_linn_udn.py`, `now_playing.py`, `play_pin.py`, `query_sources.py`, `songcast_group.py`)
-- **`experimental/`**: Work-in-progress variants (e.g., `songcast_group.py.working.ai2`)
+- **Root Scripts**: Main CLI tools (`find_linn_udn.py`, `now_playing.py`, `play_pin.py`, `query_sources.py`, `songcast_group.py`, `songcast_disband.py`, `reboot_all.py`, `device_logs.py`)
+- **Shared Modules**: `lpec_utils.py` — LPEC helper functions (query_receiver_state, wait_for_state, check_transport_playing, check_sender_uri, format_state_summary)
+- **`tests/`**: Unit tests (`test_reboot_all.py`, `test_reboot_standalone.py`, `test_songcast_disband.py`, `test_device_logs.py`, `test_lpec_utils.py`), live monitoring (`songcast_monitor.py`), LPEC capture (`capture_disband.py`), test scenarios (`test_songcast_join.json`)
+- **`captures/`**: Output directory for device log captures and LPEC event captures (gitignored artifacts)
+- **`experimental/`**: Work-in-progress variants and older snapshots
 - **`.env`**: User device configuration (gitignored)
 - **`output.txt`**: Temporary output capture file (gitignored)
 
@@ -144,8 +152,13 @@ Always UUID format: `4c494e4e-0026-0f22-5661-01531488013f` (prefix `4c494e4e` is
 
 - [README.md](README.md) - Full usage documentation, examples, troubleshooting
 - [songcast_group.py](songcast_group.py) - Complex async workflow, ohz URI handling, Receiver/Sender service usage
+- [songcast_disband.py](songcast_disband.py) - Synchronous SOAP disband workflow, auto-detect sender/receiver roles, LPEC UDN discovery
 - [now_playing.py](now_playing.py) - Device iteration, Songcast leader resolution, metadata parsing patterns
+- [reboot_all.py](reboot_all.py) - Synchronous Volkano SOAP reboot (the canonical reboot implementation)
+- [device_logs.py](device_logs.py) - Multi-device firmware debug log capture (port 2323), log classification, analysis reports
+- [lpec_utils.py](lpec_utils.py) - Shared LPEC query/verification functions used by songcast_group.py and tests/songcast_monitor.py
 - [find_linn_udn.py](find_linn_udn.py) - LPEC telnet communication, UDN extraction from ALIVE messages
-- [experimental/oneshot-reboot-ds.py](experimental/oneshot-reboot-ds.py) - Proven working reboot implementation using Volkano service
+- [tests/songcast_monitor.py](tests/songcast_monitor.py) - Real-time LPEC event monitor and test harness
+- [tests/capture_disband.py](tests/capture_disband.py) - Multi-service LPEC event capture tool for reverse-engineering
 - [.vscode/tasks.json](.vscode/tasks.json) - Preconfigured run commands (note: paths may be absolute and need adjustment)
 

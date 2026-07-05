@@ -128,7 +128,37 @@ Failed: 0/2
 
 **Observe:** Real-time state changes in Terminal 1, verify command success
 
-### Workflow 2: Automated Testing
+### Workflow 2: Firmware Debug Capture
+
+Use `device_logs.py` to capture low-level firmware diagnostics (port 2323) around any command:
+
+```bash
+# Wrap command with firmware log capture
+.venv/bin/python device_logs.py --around-command ".venv/bin/python songcast_group.py --debug"
+
+# Filter to relevant subsystems
+.venv/bin/python device_logs.py --filter SONGCAST,ERROR --around-command ".venv/bin/python songcast_group.py"
+```
+
+Output goes to `captures/` with automatic analysis (subsystem activity, HTTP status codes, stream URIs, errors).
+
+**Combined approach** - both LPEC state (port 23) and firmware debug (port 2323):
+
+Terminal 1 - LPEC state monitoring:
+```bash
+.venv/bin/python tests/songcast_monitor.py --debug
+```
+
+Terminal 2 - Firmware capture wrapping the command:
+```bash
+.venv/bin/python device_logs.py --around-command ".venv/bin/python songcast_group.py --debug"
+```
+
+This gives two complementary views:
+- **LPEC** (port 23): High-level state transitions (TransportState, Sender URI, Status)
+- **Firmware debug** (port 2323): Low-level pipeline activity (HLS segments, codec negotiation, error conditions)
+
+### Workflow 3: Automated Testing
 
 **Create test scenario:**
 ```json
@@ -422,3 +452,4 @@ Potential improvements:
 - [LPEC Protocol Documentation](https://docs.linn.co.uk/wiki/index.php/Developer:LPEC)
 - [Receiver Service Spec](http://wiki.openhome.org/wiki/Av:Developer:Service:Receiver:1)
 - [tests/SONGCAST_MONITOR.md](SONGCAST_MONITOR.md) - Monitor detailed docs
+- [device_logs.py](../device_logs.py) - Firmware debug log capture & analysis (port 2323)
