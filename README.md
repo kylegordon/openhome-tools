@@ -41,7 +41,7 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
 3. Install required dependencies:
 ```bash
-pip install openhomedevice requests
+pip install -r requirements.txt
 ```
 
 ## Configuration

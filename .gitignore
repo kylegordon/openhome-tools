@@ -43,3 +43,4 @@ Thumbs.db
 experimental/
 output.txt
 .env
+captures/

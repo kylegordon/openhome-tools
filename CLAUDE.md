@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Command-line Python tools for controlling and monitoring Linn DSM network audio players via the OpenHome protocol (UPnP/SOAP). Functionality: device discovery, now-playing queries, Pin invocation, source querying, Songcast multi-room grouping/disbanding, device rebooting, and firmware debug log capture.
 
-There is no packaging (no `pyproject.toml`/`requirements.txt`) — dependencies are installed ad hoc into `.venv`.
+Dependencies are pinned in `requirements.txt` and installed into `.venv` — there is no `pyproject.toml`/packaging beyond that.
 
 **Keep `.github/copilot-instructions.md` in sync with this file.** It's the Copilot-facing equivalent of this document and covers the same architecture/conventions in more granular detail. Whenever you learn something new about this codebase worth persisting (a corrected assumption, a new service/action, a new script, a changed workflow), update both files, not just this one.
 
@@ -23,8 +23,8 @@ There is no packaging (no `pyproject.toml`/`requirements.txt`) — dependencies 
 .venv/bin/python -m pytest tests/test_songcast_disband.py -v
 .venv/bin/python -m pytest tests/test_songcast_disband.py::TestClassifyDevices::test_classify_full_group -v
 
-# Install dependencies (no requirements.txt / pyproject.toml — install directly)
-.venv/bin/pip install openhomedevice requests pytest
+# Install dependencies
+.venv/bin/pip install -r requirements.txt
 ```
 
 There is no linter/formatter configured in this repo.
