@@ -104,6 +104,7 @@ Because SOAP calls can return HTTP 200 while the device silently fails to actual
 - **Pins are 1-based** in the CLI/UI but the underlying `Pins.GetIdArray` JSON array is 0-based: `pin_id_from_array[pin_index - 1]`.
 - **Metadata is DIDL-Lite XML** — extract `<dc:title>`, `<dc:creator>`, `<upnp:albumArtURI>`, and always run `html.unescape()` on text fields.
 - **Source type detection** is name/type substring matching, not exact enum comparison (device firmware is inconsistent): Radio → `type == "radio"` or `"radio" in name`; Songcast receiver → `"receiver" in type` or `"songcast" in name` and visible; Songcast sender → `"sender" in type` or (`"songcast" in name` and `"sender" in name`).
+- **Airable radio URIs are portable between devices** — the `Uri` returned by `Info.Track()`/`Radio.Track()` for a station (e.g. `airable.radios://radio?version=1&radioId=...&deviceId=...`) can be replayed on a *different* device as-is via `Radio.SetChannel(Uri=..., Metadata=...)` followed by `Radio.Play()` — no need to resolve it to the underlying raw stream URL first. Ensure the target device's source is set to Radio (find the index via the `Product.Source` scan, same as the Songcast source-finding pattern) before calling `SetChannel`.
 
 ### Directory layout
 

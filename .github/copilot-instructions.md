@@ -148,6 +148,9 @@ Pins are 1-based in UI and script args, but underlying JSON arrays are 0-based. 
 - **Songcast**: Check `"receiver" in source["type"].lower()` OR `"songcast" in source["name"].lower()` AND `source["visible"]`
 - **Sender**: Check `"sender" in source["type"].lower()` OR (`"songcast" in source["name"].lower()` AND `"sender" in source["name"].lower()`)
 
+### Airable Radio URIs Are Portable
+The `Uri` returned by `Info.Track()`/`Radio.Track()` for a station (e.g. `airable.radios://radio?version=1&radioId=...&deviceId=...`) can be replayed on a *different* device as-is — no need to resolve it to the underlying raw stream URL first. Pattern: ensure target device's source is Radio (find index via `Product.Source` scan, same as Songcast source-finding), then `Radio.SetChannel(Uri=..., Metadata=...)` → `Radio.Play()`.
+
 ### Device UDN Format
 Always UUID format: `4c494e4e-0026-0f22-5661-01531488013f` (prefix `4c494e4e` is "LINN" in hex)
 
