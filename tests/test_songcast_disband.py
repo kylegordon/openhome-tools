@@ -20,6 +20,7 @@ except ImportError:
     pytest = None
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import lpec_utils
 import songcast_disband
 
 
@@ -638,3 +639,97 @@ if __name__ == "__main__":
     print("✓ SOAP URL format: Playlist control URL correct")
 
     print("\n✓ All standalone tests passed!")
+
+
+# --- Device responses are untrusted input ---
+
+class TestSoapOut:
+    """SOAP responses are parsed, not regex-scraped."""
+
+    RESP = (
+        '<?xml version="1.0"?>'
+        '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">'
+        '<s:Body>'
+        '<u:SourceResponse xmlns:u="urn:av-openhome-org:service:Product:4">'
+        '<Type>Playlist</Type><Name>Kitchen &amp; Diner</Name>'
+        '<Visible>true</Visible>'
+        '</u:SourceResponse>'
+        '</s:Body></s:Envelope>'
+    )
+
+    def test_reads_named_argument(self):
+        assert songcast_disband._soap_out(self.RESP, "Type") == "Playlist"
+
+    def test_unescapes_entities(self):
+        # Regression: the previous regex returned "Kitchen &amp; Diner" raw.
+        assert songcast_disband._soap_out(self.RESP, "Name") == "Kitchen & Diner"
+
+    def test_namespaced_tags_match_on_local_name(self):
+        resp = (
+            '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">'
+            '<s:Body><u:X xmlns:u="urn:x"><Value>Playing</Value></u:X>'
+            '</s:Body></s:Envelope>'
+        )
+        assert songcast_disband._soap_out(resp, "Value") == "Playing"
+
+    def test_missing_argument_returns_none(self):
+        assert songcast_disband._soap_out(self.RESP, "Nope") is None
+
+    def test_malformed_xml_returns_none_not_partial_match(self):
+        # A regex would happily match inside a truncated body; the parser won't.
+        assert songcast_disband._soap_out("<s:Body><Value>Playing", "Value") is None
+
+    def test_empty_input_returns_none(self):
+        assert songcast_disband._soap_out("", "Value") is None
+        assert songcast_disband._soap_out(None, "Value") is None
+
+
+class TestDisplaySanitising:
+    """Device names reach the terminal and must not be able to forge it."""
+
+    def test_strips_ansi_escapes(self):
+        out = lpec_utils.safe_for_display("Study\x1b[2K\x1b[1A OK")
+        assert "\x1b" not in out
+
+    def test_strips_carriage_return_and_nulls(self):
+        assert "\r" not in lpec_utils.safe_for_display("A\rB")
+        assert "\x00" not in lpec_utils.safe_for_display("A\x00B")
+
+    def test_collapses_whitespace_and_newlines(self):
+        assert lpec_utils.safe_for_display("Tin\n\n  Hut") == "Tin Hut"
+
+    def test_truncates_long_names(self):
+        out = lpec_utils.safe_for_display("x" * 200)
+        assert len(out) == lpec_utils.DISPLAY_CHARS
+        assert out.endswith("…")
+
+    def test_none_and_empty(self):
+        assert lpec_utils.safe_for_display(None) == ""
+        assert lpec_utils.safe_for_display("") == ""
+
+    def test_ordinary_name_is_unchanged(self):
+        assert lpec_utils.safe_for_display("Linn Tin Hut") == "Linn Tin Hut"
+
+
+class TestBounding:
+    def test_caps_length_for_matching(self):
+        capped = lpec_utils.bounded("y" * 5000)
+        assert len(capped) == lpec_utils.MAX_FIELD_CHARS
+
+    def test_none_becomes_empty(self):
+        assert lpec_utils.bounded(None) == ""
+
+    def test_short_values_pass_through(self):
+        assert lpec_utils.bounded("Songcast") == "Songcast"
+
+
+class TestSourceIndexValidation:
+    @patch("songcast_disband._soap_request")
+    def test_non_numeric_index_returns_none(self, mock_soap):
+        mock_soap.return_value = "<s:Body><Value>not-a-number</Value></s:Body>"
+        assert songcast_disband.get_current_source("1.2.3.4", "udn") is None
+
+    @patch("songcast_disband._soap_request")
+    def test_implausible_index_is_rejected(self, mock_soap):
+        mock_soap.return_value = "<s:Body><Value>999999</Value></s:Body>"
+        assert songcast_disband.get_current_source("1.2.3.4", "udn") is None

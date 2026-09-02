@@ -29,11 +29,14 @@ Notes:
 import sys
 import os
 import re
+import html
 import socket
 import time
 import argparse
 import requests
 import xml.etree.ElementTree as ET
+
+from lpec_utils import bounded, safe_for_display
 
 try:
     sys.stdout.reconfigure(line_buffering=True)
@@ -108,6 +111,35 @@ def load_devices(env_path=None, debug=False):
     return devices
 
 
+# --- Handling device responses -----------------------------------------------
+#
+# Everything read back from a device is remote input: whatever some box on the
+# network chose to say about itself. Parse it properly rather than scraping it
+# with regexes, bound it before it influences a decision, and sanitise it before
+# printing it.
+
+_MAX_SOURCE_INDEX = 255
+
+
+def _soap_out(text, name):
+    """Read one named output argument from a SOAP response body.
+
+    Matched on the local tag name so it is namespace-agnostic, and unescaped so
+    a source called "Kitchen &amp; Diner" comes back as "Kitchen & Diner".
+    Returns None if the argument is absent or the body will not parse.
+    """
+    if not text:
+        return None
+    try:
+        root = ET.fromstring(text)
+    except Exception:
+        return None
+    for el in root.iter():
+        if el.tag.rsplit("}", 1)[-1] == name:
+            return html.unescape((el.text or "").strip())
+    return None
+
+
 def _soap_request(ip, udn, service_path, service_urn, action, timeout=5):
     """Send a SOAP request and return the response text, or None on failure."""
     return _soap_request_with_params(ip, udn, service_path, service_urn, action, {}, timeout)
@@ -150,7 +182,7 @@ def get_device_name(ip, udn, timeout=3):
         for ns in ["{urn:schemas-upnp-org:device-1-0}", ""]:
             el = root.find(f".//{ns}friendlyName")
             if el is not None and el.text:
-                return el.text.strip()
+                return bounded(el.text.strip())
     except Exception:
         pass
     return ip
@@ -165,11 +197,8 @@ def get_receiver_transport_state(ip, udn, debug=False):
             "urn:av-openhome-org:service:Receiver:1",
             "TransportState",
         )
-        # Parse <Value>...</Value> from response
-        m = re.search(r"<Value>([^<]+)</Value>", text, re.IGNORECASE)
-        if not m:
-            m = re.search(r"<TransportState>([^<]+)</TransportState>", text, re.IGNORECASE)
-        state = m.group(1).strip() if m else None
+        # Older firmware names the output argument TransportState, not Value.
+        state = _soap_out(text, "Value") or _soap_out(text, "TransportState") or None
         if debug:
             print(f"  [debug] {ip} Receiver.TransportState = {state}")
         return state
@@ -188,10 +217,9 @@ def get_receiver_sender_uri(ip, udn, debug=False):
             "urn:av-openhome-org:service:Receiver:1",
             "Sender",
         )
-        m = re.search(r"<Uri>([^<]*)</Uri>", text, re.IGNORECASE)
-        uri = m.group(1).strip() if m else None
+        uri = _soap_out(text, "Uri")
         if debug:
-            print(f"  [debug] {ip} Receiver.Sender Uri = {uri}")
+            print(f"  [debug] {ip} Receiver.Sender Uri = {safe_for_display(uri, 96)}")
         return uri
     except Exception as e:
         if debug:
@@ -214,10 +242,9 @@ def get_sender_status2(ip, udn, debug=False):
             "urn:av-openhome-org:service:Sender:2",
             "Status2",
         )
-        m = re.search(r"<Value>([^<]+)</Value>", text, re.IGNORECASE)
-        status = m.group(1).strip() if m else None
+        status = _soap_out(text, "Value")
         if debug:
-            print(f"  [debug] {ip} Sender.Status2 = {status}")
+            print(f"  [debug] {ip} Sender.Status2 = {safe_for_display(status)}")
         return status
     except Exception as e:
         if debug:
@@ -323,10 +350,17 @@ def get_current_source(ip, udn, debug=False):
             "urn:av-openhome-org:service:Product:4",
             "SourceIndex",
         )
-        m = re.search(r"<Value>(\d+)</Value>", text, re.IGNORECASE)
-        if not m:
+        raw_idx = _soap_out(text, "Value")
+        if raw_idx is None or not raw_idx.isdigit():
             return None
-        idx = int(m.group(1))
+        idx = int(raw_idx)
+        # The index is only ever compared and displayed here — the disband step
+        # writes a hardcoded SetSourceIndex(0) — so a sanity bound is enough and
+        # a SourceCount round-trip would buy nothing.
+        if idx > _MAX_SOURCE_INDEX:
+            if debug:
+                print(f"  [debug] {ip} implausible source index {idx}, ignoring")
+            return None
 
         # Get source details for that index
         url = f"http://{ip}:55178/{udn}/av.openhome.org-Product-4/control"
@@ -348,12 +382,13 @@ def get_current_source(ip, udn, debug=False):
         resp = requests.post(url, headers=headers, data=body, timeout=5)
         resp.raise_for_status()
 
-        m_type = re.search(r"<Type>([^<]*)</Type>", resp.text, re.IGNORECASE)
-        m_name = re.search(r"<Name>([^<]*)</Name>", resp.text, re.IGNORECASE)
-        source_type = m_type.group(1).strip() if m_type else ""
-        source_name = m_name.group(1).strip() if m_name else ""
+        source_type = bounded(_soap_out(resp.text, "Type"))
+        source_name = bounded(_soap_out(resp.text, "Name"))
         if debug:
-            print(f"  [debug] {ip} current source: idx={idx} type={source_type} name={source_name}")
+            print(
+                f"  [debug] {ip} current source: idx={idx} "
+                f"type={safe_for_display(source_type)} name={safe_for_display(source_name)}"
+            )
         return {"index": idx, "type": source_type, "name": source_name}
     except Exception as e:
         if debug:
@@ -423,7 +458,7 @@ def disband_group(devices, debug=False, stop_sender=False):
     print("=== Linn OpenHome Songcast Group Disbander ===")
     print(f"Devices found: {len(classified)}")
     for d in classified:
-        print(f"  {d['name']} ({d['ip']}): {d['role']}")
+        print(f"  {safe_for_display(d['name'])} ({d['ip']}): {d['role']}")
     print("-" * 50)
 
     if not receivers and not senders:
@@ -436,12 +471,12 @@ def disband_group(devices, debug=False, stop_sender=False):
     if receivers:
         print(f"\n1. Disconnecting {len(receivers)} receiver(s) from Songcast group...")
         for d in receivers:
-            print(f"  {d['name']} ({d['ip']})...")
+            print(f"  {safe_for_display(d['name'])} ({d['ip']})...")
             # Clear the sender URI first
             clear_receiver_sender(d["ip"], d["udn"], debug)
             # Then stop the receiver
             stop_receiver(d["ip"], d["udn"], debug)
-            print(f"  ✓ {d['name']} receiver cleared and stopped")
+            print(f"  ✓ {safe_for_display(d['name'])} receiver cleared and stopped")
     else:
         print("\n1. No receivers to disconnect.")
 
@@ -453,12 +488,12 @@ def disband_group(devices, debug=False, stop_sender=False):
             if src and src["index"] != 0:
                 ok = set_source_index(d["ip"], d["udn"], 0, debug)
                 if ok:
-                    print(f"  ✓ {d['name']} switched from {src['name']} (idx {src['index']}) to Playlist (idx 0)")
+                    print(f"  ✓ {safe_for_display(d['name'])} switched from {safe_for_display(src['name'])} (idx {src['index']}) to Playlist (idx 0)")
                 else:
-                    print(f"  ✗ Failed to switch {d['name']} source")
+                    print(f"  ✗ Failed to switch {safe_for_display(d['name'])} source")
                     all_ok = False
             else:
-                print(f"  ✓ {d['name']} already on source index 0")
+                print(f"  ✓ {safe_for_display(d['name'])} already on source index 0")
     else:
         print("\n2. No receivers to switch.")
 
@@ -471,16 +506,16 @@ def disband_group(devices, debug=False, stop_sender=False):
         if stop_sender:
             print(f"\n3. Stopping playback on {len(senders)} sender(s) (--stop-sender)...")
             for d in senders:
-                print(f"  Stopping {d['name']} ({d['ip']})...")
+                print(f"  Stopping {safe_for_display(d['name'])} ({d['ip']})...")
                 ok = stop_playlist(d["ip"], d["udn"], debug)
                 if ok:
-                    print(f"  ✓ {d['name']} playback stopped")
+                    print(f"  ✓ {safe_for_display(d['name'])} playback stopped")
                 else:
-                    print(f"  ✗ Failed to stop playback on {d['name']}")
+                    print(f"  ✗ Failed to stop playback on {safe_for_display(d['name'])}")
                     all_ok = False
         else:
             for d in senders:
-                print(f"\n3. Leaving {d['name']} ({d['ip']}) playing (use --stop-sender to stop it).")
+                print(f"\n3. Leaving {safe_for_display(d['name'])} ({d['ip']}) playing (use --stop-sender to stop it).")
     else:
         print("\n3. No sender found.")
 
@@ -493,24 +528,24 @@ def disband_group(devices, debug=False, stop_sender=False):
             src_ok = source and source["type"].lower() != "receiver"
             uri_ok = not uri or not uri.strip()
             if src_ok and uri_ok:
-                print(f"  ✓ {d['name']}: standalone (source={source['name']}, no sender URI)")
+                print(f"  ✓ {safe_for_display(d['name'])}: standalone (source={safe_for_display(source['name'])}, no sender URI)")
             elif src_ok:
-                print(f"  ✓ {d['name']}: source={source['name']} (sender URI still set but source changed)")
+                print(f"  ✓ {safe_for_display(d['name'])}: source={safe_for_display(source['name'])} (sender URI still set but source changed)")
             else:
-                print(f"  ⚠ {d['name']}: still on Songcast source")
+                print(f"  ⚠ {safe_for_display(d['name'])}: still on Songcast source")
                 all_ok = False
         elif d["role"] == "standalone":
-            print(f"  ✓ {d['name']}: already standalone")
+            print(f"  ✓ {safe_for_display(d['name'])}: already standalone")
         elif d["role"] == "sender":
             if stop_sender:
-                print(f"  ✓ {d['name']}: sender (playback stopped)")
+                print(f"  ✓ {safe_for_display(d['name'])}: sender (playback stopped)")
             else:
                 status = get_sender_status2(d["ip"], d["udn"], debug)
                 if status and status.lower() == "sending":
-                    print(f"  ⚠ {d['name']}: sender still streaming (a receiver may not have detached)")
+                    print(f"  ⚠ {safe_for_display(d['name'])}: sender still streaming (a receiver may not have detached)")
                     all_ok = False
                 else:
-                    print(f"  ✓ {d['name']}: sender released, still playing locally")
+                    print(f"  ✓ {safe_for_display(d['name'])}: sender released, still playing locally")
 
     print("\n" + "=" * 50)
     if all_ok:

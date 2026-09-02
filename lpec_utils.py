@@ -20,6 +20,41 @@ import re
 import time
 from typing import Dict, Optional, Tuple
 
+# --- Handling device-supplied text --------------------------------------------
+#
+# Everything read back over LPEC or SOAP is remote input: whatever some box on
+# the network chose to say about itself. Bound it before it influences a
+# decision, and sanitise it before printing it. Shared by lpec_utils itself,
+# songcast_disband.py and tests/songcast_monitor.py.
+
+MAX_FIELD_CHARS = 128  # longest device string used in matching
+DISPLAY_CHARS = 48  # longest device string echoed to the terminal
+
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def bounded(value: Optional[str], limit: int = MAX_FIELD_CHARS) -> str:
+    """Cap a device-supplied string before it is compared or substring-matched."""
+    return (value or "")[:limit]
+
+
+def safe_for_display(value, limit: int = DISPLAY_CHARS) -> str:
+    """Make a device-supplied string safe to print.
+
+    Device names, source names and transport states are echoed to the terminal,
+    so a device returning ANSI escapes could reposition the cursor or overwrite
+    lines — enough to make a failed run read as a successful one in a log
+    someone later pastes into an issue. Strip control characters, collapse
+    whitespace, truncate. Display only: comparisons use the raw value.
+    """
+    if value is None:
+        return ""
+    s = _CONTROL_CHARS.sub("", str(value))
+    s = " ".join(s.split())
+    if len(s) > limit:
+        s = s[: limit - 1] + "…"
+    return s
+
 
 def query_receiver_state(ip: str, timeout: float = 3.0) -> Optional[Dict[str, str]]:
     """
@@ -229,8 +264,8 @@ def format_state_summary(state: Optional[Dict[str, str]]) -> str:
     parts = []
     
     if 'TransportState' in state:
-        parts.append(f"Transport={state['TransportState']}")
-    
+        parts.append(f"Transport={safe_for_display(state['TransportState'])}")
+
     if 'Sender' in state:
         sender = state['Sender']
         if sender.startswith('ohz://'):
@@ -238,12 +273,12 @@ def format_state_summary(state: Optional[Dict[str, str]]) -> str:
         elif sender.startswith('ohSongcast://'):
             parts.append("Sender=ohSongcast://...")
         elif sender:
-            parts.append(f"Sender={sender[:30]}...")
+            parts.append(f"Sender={safe_for_display(sender, 30)}...")
         else:
             parts.append("Sender=(empty)")
-    
+
     if 'Status' in state:
-        parts.append(f"Status={state['Status']}")
+        parts.append(f"Status={safe_for_display(state['Status'])}")
     
     return ", ".join(parts) if parts else "No data"
 
@@ -265,7 +300,7 @@ if __name__ == "__main__":
         print(f"  {format_state_summary(state)}")
         print("\nFull state:")
         for key, value in state.items():
-            print(f"  {key}: {value}")
+            print(f"  {key}: {safe_for_display(value, 120)}")
     else:
         print("\n✗ Failed to retrieve state")
         print("  Device may be offline or telnet disabled")

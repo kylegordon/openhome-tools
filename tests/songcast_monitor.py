@@ -43,6 +43,9 @@ import json
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from lpec_utils import safe_for_display  # noqa: E402  (needs the path insert above)
+
 # Ensure immediate flushing when redirected
 try:
     sys.stdout.reconfigure(line_buffering=True)
@@ -373,22 +376,30 @@ class DeviceMonitor:
                     new_str = self._format_uri(new) if new else "None"
                     self.log(f"  {var}: {old_str} → {new_str}", "EVENT")
                 else:
-                    self.log(f"  {var}: {old} → {new}", "EVENT")
+                    self.log(
+                        f"  {var}: {safe_for_display(old)} → {safe_for_display(new)}",
+                        "EVENT",
+                    )
                     
                 # Check assertions
                 for assertion in self.assertions:
                     if assertion.check(self.device_id, var, new):
                         elapsed = assertion.elapsed_time()
-                        self.log(f"  ✓ Assertion met: {var}={new} (after {elapsed:.2f}s)", "ASSERT")
+                        self.log(
+                            f"  ✓ Assertion met: {var}={safe_for_display(new)} "
+                            f"(after {elapsed:.2f}s)",
+                            "ASSERT",
+                        )
                         
         elif self.verbose:
             # No changes but log the event in verbose mode
             self.log(f"Event #{seq} (no changes)", "DEBUG")
             
     def _format_uri(self, uri: str) -> str:
-        """Format URI for compact display"""
+        """Format a device-supplied URI for compact, terminal-safe display."""
         if not uri:
             return "None"
+        uri = safe_for_display(uri, 120)
         if uri.startswith('ohz://'):
             # Extract multicast address if present
             m = re.search(r'ohz://([^/]+)', uri)
