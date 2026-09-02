@@ -34,7 +34,8 @@ def invoke_pin(ip, udn, pin_id):
     """Invoke a specific pin on the Linn device.
 
     Sends a Pins:1 InvokeId SOAP request to start playback of the content
-    associated with the provided 1-based pin index.
+    associated with the given pin Id. This is the device-assigned Id from
+    GetIdArray, NOT a 1-based UI index — use resolve_pin_id() to convert.
     """
     url = f'http://{ip}:55178/{udn}/av.openhome.org-Pins-1/control'
     hdrs = {'SOAPACTION': '"urn:av-openhome-org:service:Pins:1#InvokeId"'}
@@ -59,6 +60,52 @@ def invoke_pin(ip, udn, pin_id):
     except Exception as e:
         print(f"✗ Error invoking pin {pin_id}: {e}")
         return False
+
+def resolve_pin_id(ip, udn, pin_index):
+    """Map a 1-based CLI pin number to the device's own pin Id.
+
+    Pins:1 declares InvokeId(Id), where Id is the device-assigned identifier
+    returned by GetIdArray — not an ordinal. The array is 0-based and may
+    contain 0 entries for empty slots, e.g. [1, 0, 2, 3, 0, 4], so the Nth pin
+    a user sees is emphatically not "Id N".
+
+    Returns the pin Id, or None if the index is out of range or that slot is
+    empty. See CLAUDE.md, "Pins are 1-based in the CLI/UI".
+    """
+    url = f'http://{ip}:55178/{udn}/av.openhome.org-Pins-1/control'
+    hdrs = {
+        'SOAPACTION': '"urn:av-openhome-org:service:Pins:1#GetIdArray"',
+        'Content-Type': 'text/xml; charset="utf-8"',
+    }
+    msg = ('<?xml version="1.0" encoding="utf-8"?>'
+           '<s:Envelope s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"'
+           ' xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>'
+           '<u:GetIdArray xmlns:u="urn:av-openhome-org:service:Pins:1" />'
+           '</s:Body></s:Envelope>')
+    try:
+        resp = requests.post(url, headers=hdrs, data=msg, timeout=5)
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+        raw = next((el.text for el in root.iter()
+                    if el.tag.rsplit('}', 1)[-1] == 'IdArray'), None)
+        if not raw:
+            print("Could not parse IdArray from response")
+            return None
+        id_array = json.loads(raw)
+    except Exception as e:
+        print(f"✗ Error reading pin ID array: {e}")
+        return None
+
+    idx = pin_index - 1
+    if idx < 0 or idx >= len(id_array):
+        print(f"✗ Pin {pin_index} out of range (device has {len(id_array)} slots)")
+        return None
+    pin_id = id_array[idx]
+    if not pin_id:
+        print(f"✗ Pin {pin_index} is an empty slot on this device")
+        return None
+    return pin_id
+
 
 def get_pin_info(ip, udn, pin_index):
     """
@@ -160,11 +207,11 @@ def main():
         print("Usage: python3 play_pin.py <ip_address> <udn> <pin_number>")
         print("\nExample:")
         print("python3 play_pin.py 172.24.32.211 4c494e4e-0026-0f22-5661-01531488013f 2")
-        return
+        return 2
     
     if len(sys.argv) < 4:
         print("Error: IP address, UDN, and pin number are required")
-        return
+        return 2
     
     ip = sys.argv[1]
     udn = sys.argv[2]
@@ -178,13 +225,19 @@ def main():
         pin_number = int(sys.argv[3])
     except ValueError:
         print("Error: Pin number must be an integer")
-        return
-    
+        return 2
+
     print(f"Pin: {pin_number}")
 
-    print(f"\nInvoking pin {pin_number}...")
-    success = invoke_pin(ip, udn, pin_number)
-    
+    # The 1-based CLI number is not the device's pin Id — resolve it first.
+    # Passing the ordinal straight to InvokeId played whichever pin happened to
+    # carry that Id, while the info printed below described a different one.
+    pin_id = resolve_pin_id(ip, udn, pin_number)
+    if pin_id is None:
+        return 1
+    print(f"\nInvoking pin {pin_number} (device Id {pin_id})...")
+    success = invoke_pin(ip, udn, pin_id)
+
     if success:
         print(f"✓ Pin {pin_number} has been invoked")
         print("The device should now be playing the content associated with this pin")
@@ -205,12 +258,14 @@ def main():
             print(f"Artwork: {artwork}")
         else:
             print("Could not retrieve pin info.")
+        return 0
     else:
         print(f"✗ Failed to invoke pin {pin_number}")
         print("\nTroubleshooting:")
         print("- Check that the pin number exists and is configured")
         print("- Verify the device is powered on and responsive")
         print("- Try listing available pins first")
+        return 1
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)

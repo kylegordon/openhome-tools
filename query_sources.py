@@ -85,12 +85,17 @@ def get_source_details(ip, udn, source_index):
             root = ET.fromstring(resp.text)
             source_info = {'name': 'Unknown', 'type': 'Unknown', 'visible': True}
             
+            system_name = None
             for elem in root.iter():
-                # Prefer 'Name'; fall back to 'SystemName'
-                if elem.tag.endswith('Name'):
-                    source_info['name'] = elem.text or f'Source {source_index}'
-                elif elem.tag.endswith('SystemName'):
-                    source_info['name'] = elem.text or f'Source {source_index}'
+                # Exact local-name match: 'SystemName'.endswith('Name') is True,
+                # so a suffix test made the SystemName branch unreachable and
+                # let an empty <Name> overwrite a good <SystemName>.
+                local = elem.tag.rsplit('}', 1)[-1]
+                if local == 'Name':
+                    if elem.text:
+                        source_info['name'] = elem.text
+                elif local == 'SystemName':
+                    system_name = elem.text or None
                 elif elem.tag.endswith('Type'):
                     source_info['type'] = elem.text or 'Unknown'
                 elif elem.tag.endswith('Visible'):
@@ -102,7 +107,11 @@ def get_source_details(ip, udn, source_index):
                     else:
                         # Default to visible if value is unexpected/missing
                         source_info['visible'] = True
-            
+
+            # Documented behaviour: prefer Name, fall back to SystemName.
+            if source_info['name'] == 'Unknown':
+                source_info['name'] = system_name or f'Source {source_index}'
+
             return source_info
         else:
             print(f"Error getting source {source_index}: HTTP {resp.status_code}")

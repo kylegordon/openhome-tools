@@ -12,7 +12,10 @@ Or standalone:
 import os
 import sys
 import tempfile
+import xml.etree.ElementTree as ET
 from unittest.mock import patch, MagicMock
+
+import requests
 
 try:
     import pytest
@@ -151,30 +154,6 @@ class TestDiscoverUdn:
 
 
 # --- SOAP URL construction tests ---
-
-class TestSoapUrls:
-    def test_receiver_control_url(self):
-        ip = "172.24.32.210"
-        udn = "4c494e4e-0026-0f22-646e-01560511013f"
-        expected = f"http://{ip}:55178/{udn}/av.openhome.org-Receiver-1/control"
-        # Verify the URL that _soap_request would construct
-        url = f"http://{ip}:55178/{udn}/av.openhome.org-Receiver-1/control"
-        assert url == expected
-
-    def test_playlist_control_url(self):
-        ip = "172.24.32.211"
-        udn = "4c494e4e-0026-0f22-5661-01531488013f"
-        expected = f"http://{ip}:55178/{udn}/av.openhome.org-Playlist-1/control"
-        url = f"http://{ip}:55178/{udn}/av.openhome.org-Playlist-1/control"
-        assert url == expected
-
-    def test_sender_control_url(self):
-        ip = "172.24.32.211"
-        udn = "4c494e4e-0026-0f22-5661-01531488013f"
-        expected = f"http://{ip}:55178/{udn}/av.openhome.org-Sender-2/control"
-        url = f"http://{ip}:55178/{udn}/av.openhome.org-Sender-2/control"
-        assert url == expected
-
 
 # --- Device classification tests ---
 
@@ -733,3 +712,251 @@ class TestSourceIndexValidation:
     def test_implausible_index_is_rejected(self, mock_soap):
         mock_soap.return_value = "<s:Body><Value>999999</Value></s:Body>"
         assert songcast_disband.get_current_source("1.2.3.4", "udn") is None
+
+
+# --- The SOAP layer itself ---
+#
+# These drive each helper all the way down to a patched requests.post and assert
+# on the actual request. Without them the whole construction layer — port, path,
+# SOAPACTION header, envelope, argument element names — is unverified, which is
+# how three non-existent action names survived in this codebase for months.
+
+class _FakeResponse:
+    def __init__(self, body=b"<Body/>", status=200):
+        self.content = body
+        self.text = body.decode() if isinstance(body, bytes) else body
+        self.status_code = status
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"HTTP {self.status_code}")
+
+
+class TestSoapRequestConstruction:
+    IP = "1.2.3.4"
+    UDN = "udn-xyz"
+
+    def test_builds_exact_url_headers_and_body(self):
+        with patch("songcast_disband.requests.post", return_value=_FakeResponse()) as post:
+            songcast_disband._soap_request(
+                self.IP, self.UDN,
+                "av.openhome.org-Receiver-1",
+                "urn:av-openhome-org:service:Receiver:1",
+                "Stop",
+            )
+        url = post.call_args[0][0]
+        headers = post.call_args[1]["headers"]
+        body = post.call_args[1]["data"]
+
+        assert url == "http://1.2.3.4:55178/udn-xyz/av.openhome.org-Receiver-1/control"
+        assert headers["SOAPACTION"] == '"urn:av-openhome-org:service:Receiver:1#Stop"'
+        assert headers["Content-Type"] == 'text/xml; charset="utf-8"'
+        assert '<u:Stop xmlns:u="urn:av-openhome-org:service:Receiver:1"/>' in body
+        # Envelope must be well-formed and carry the action inside s:Body.
+        root = ET.fromstring(body)
+        body_el = root.find("{http://schemas.xmlsoap.org/soap/envelope/}Body")
+        assert body_el is not None and len(body_el) == 1
+
+    def test_serialises_named_arguments_as_elements(self):
+        with patch("songcast_disband.requests.post", return_value=_FakeResponse()) as post:
+            songcast_disband._soap_request_with_params(
+                self.IP, self.UDN,
+                "av.openhome.org-Receiver-1",
+                "urn:av-openhome-org:service:Receiver:1",
+                "SetSender", {"Uri": "", "Metadata": ""},
+            )
+        body = post.call_args[1]["data"]
+        assert "<Uri></Uri>" in body
+        assert "<Metadata></Metadata>" in body
+
+    def test_argument_values_are_xml_escaped(self):
+        """A DIDL blob or a URI with & and < must not corrupt the envelope."""
+        didl = '<DIDL-Lite><item id="0">A & B</item></DIDL-Lite>'
+        with patch("songcast_disband.requests.post", return_value=_FakeResponse()) as post:
+            songcast_disband._soap_request_with_params(
+                self.IP, self.UDN,
+                "av.openhome.org-Receiver-1",
+                "urn:av-openhome-org:service:Receiver:1",
+                "SetSender", {"Uri": "ohz://x?a=1&b=2", "Metadata": didl},
+            )
+        body = post.call_args[1]["data"]
+        root = ET.fromstring(body)  # must still be well-formed
+        sent = {el.tag: el.text for el in root.iter() if el.tag in ("Uri", "Metadata")}
+        assert sent["Uri"] == "ohz://x?a=1&b=2"
+        assert sent["Metadata"] == didl
+
+    def test_rejects_non_identifier_argument_names(self):
+        with patch("songcast_disband.requests.post", return_value=_FakeResponse()):
+            with pytest.raises(ValueError):
+                songcast_disband._soap_request_with_params(
+                    self.IP, self.UDN, "svc", "urn:x", "Act", {"Uri><evil": "x"},
+                )
+
+    def test_http_500_soap_fault_raises(self):
+        with patch("songcast_disband.requests.post", return_value=_FakeResponse(status=500)):
+            with pytest.raises(requests.HTTPError):
+                songcast_disband._soap_request(
+                    self.IP, self.UDN, "svc", "urn:x", "Act")
+
+
+class TestActionNamesMatchTheDevice:
+    """Pin the exact service/action each helper invokes.
+
+    Verified against the SCPDs of a live Linn DSM. If a name here stops matching
+    the device, that is a real bug — which is precisely what went undetected
+    before, because every failing call was swallowed by a bare except.
+    """
+
+    CASES = [
+        ("get_receiver_transport_state",
+         "av.openhome.org-Receiver-1", "urn:av-openhome-org:service:Receiver:1#TransportState"),
+        ("get_receiver_sender_uri",
+         "av.openhome.org-Receiver-1", "urn:av-openhome-org:service:Receiver:1#Sender"),
+        ("stop_receiver",
+         "av.openhome.org-Receiver-1", "urn:av-openhome-org:service:Receiver:1#Stop"),
+        ("get_sender_status2",
+         "av.openhome.org-Sender-2", "urn:av-openhome-org:service:Sender:2#Status2"),
+        ("stop_playlist",
+         "av.openhome.org-Playlist-1", "urn:av-openhome-org:service:Playlist:1#Stop"),
+    ]
+
+    @pytest.mark.parametrize("func_name,service_path,soapaction", CASES)
+    def test_helper_uses_documented_service_and_action(self, func_name, service_path, soapaction):
+        with patch("songcast_disband.requests.post", return_value=_FakeResponse()) as post:
+            getattr(songcast_disband, func_name)("1.2.3.4", "udn")
+        assert service_path in post.call_args[0][0]
+        assert post.call_args[1]["headers"]["SOAPACTION"] == f'"{soapaction}"'
+
+    def test_sender_role_query_uses_status2_not_status(self):
+        """Sender.Status reports "Enabled" on every idle device and cannot
+        identify the leader; Status2 ("Ready"/"Sending") is the real signal."""
+        with patch("songcast_disband.requests.post", return_value=_FakeResponse()) as post:
+            songcast_disband.get_sender_status2("1.2.3.4", "udn")
+        action = post.call_args[1]["headers"]["SOAPACTION"]
+        assert action.endswith('#Status2"')
+        assert not action.endswith('#Status"')
+
+    def test_set_source_index_sends_Value_argument(self):
+        """Product:4 declares SetSourceIndex in=['Value'] — not aIndex."""
+        with patch("songcast_disband.requests.post", return_value=_FakeResponse()) as post:
+            songcast_disband.set_source_index("1.2.3.4", "udn", 0)
+        body = post.call_args[1]["data"]
+        assert "<Value>0</Value>" in body
+        assert "aIndex" not in body
+        assert "av.openhome.org-Product-4" in post.call_args[0][0]
+
+
+class TestSoapOutTagMatching:
+    """_soap_out must match the local tag name exactly.
+
+    A suffix match would let <SystemName> satisfy a request for "Name" — the
+    same defect that made query_sources.py's SystemName fallback unreachable.
+    """
+
+    RESP = (
+        '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>'
+        '<u:SourceResponse xmlns:u="urn:av-openhome-org:service:Product:4">'
+        "<SystemName>Songcast</SystemName><Name>Kitchen</Name>"
+        "</u:SourceResponse></s:Body></s:Envelope>"
+    )
+
+    def test_exact_name_not_systemname(self):
+        assert songcast_disband._soap_out(self.RESP, "Name") == "Kitchen"
+
+    def test_systemname_read_separately(self):
+        assert songcast_disband._soap_out(self.RESP, "SystemName") == "Songcast"
+
+    def test_reads_a_genuinely_namespaced_output_argument(self):
+        resp = (
+            '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>'
+            '<u:TransportStateResponse xmlns:u="urn:av-openhome-org:service:Receiver:1">'
+            "<u:Value>Playing</u:Value>"
+            "</u:TransportStateResponse></s:Body></s:Envelope>"
+        )
+        assert songcast_disband._soap_out(resp, "Value") == "Playing"
+
+    def test_does_not_double_unescape(self):
+        """ElementTree already decodes entities; a second pass corrupts values.
+
+        A source literally named 'AT&T' arrives on the wire as AT&amp;amp;T.
+        """
+        wire = "<Body><Name>AT&amp;amp;T</Name></Body>"
+        assert songcast_disband._soap_out(wire, "Name") == "AT&amp;T"
+        wire2 = "<Body><Name>Bar &amp;copy; Grill</Name></Body>"
+        assert songcast_disband._soap_out(wire2, "Name") == "Bar &copy; Grill"
+
+
+class TestPartialReceiverClearIsAFailure:
+    """Clearing the sender URI and stopping the receiver must BOTH succeed.
+
+    The clear is what releases a zombie receiver; the stop alone does not. If
+    either fails the receiver may still be bound, so a partial result is a
+    failure, not a success.
+    """
+
+    def _run(self, cleared, stopped):
+        with patch("songcast_disband.classify_devices") as cls, \
+             patch("songcast_disband.clear_receiver_sender", return_value=cleared), \
+             patch("songcast_disband.stop_receiver", return_value=stopped), \
+             patch("songcast_disband.set_source_index", return_value=True), \
+             patch("songcast_disband.get_current_source",
+                   return_value={"index": 0, "type": "Playlist", "name": "Playlist"}), \
+             patch("songcast_disband.get_receiver_sender_uri", return_value=""), \
+             patch("songcast_disband.get_sender_status2", return_value="Ready"):
+            cls.return_value = [{
+                "ip": "10.0.0.3", "udn": "u", "name": "Tin Hut", "role": "receiver",
+                "source": {"index": 3, "type": "Receiver", "name": "Songcast"},
+            }]
+            return songcast_disband.disband_group([{"ip": "10.0.0.3", "udn": "u"}])
+
+    def test_both_succeed_is_success(self):
+        assert self._run(True, True) is True
+
+    def test_clear_fails_is_failure(self):
+        assert self._run(False, True) is False
+
+    def test_stop_fails_is_failure(self):
+        assert self._run(True, False) is False
+
+    def test_both_fail_is_failure(self):
+        assert self._run(False, False) is False
+
+
+class TestUnreadableDevicesFailTheRun:
+    """A device that cannot be read is not the same as a device that is idle.
+
+    Every query helper returns None on failure, so an unreachable fleet used to
+    classify as all-standalone and report "No active Songcast group found" with
+    exit 0 — indistinguishable from a genuinely idle system, and the same shape
+    the three invented action names took before they were found.
+    """
+
+    def test_unreadable_device_is_classified_as_unreadable(self):
+        with patch("songcast_disband.get_device_name", return_value="Study"), \
+             patch("songcast_disband.get_current_source", return_value=None), \
+             patch("songcast_disband.get_sender_status2", return_value=None):
+            result = songcast_disband.classify_devices([{"ip": "10.0.0.2", "udn": "u"}])
+        assert result[0]["role"] == "unreadable"
+
+    def test_answering_device_is_still_standalone(self):
+        with patch("songcast_disband.get_device_name", return_value="Study"), \
+             patch("songcast_disband.get_current_source",
+                   return_value={"index": 0, "type": "Playlist", "name": "Playlist"}), \
+             patch("songcast_disband.get_sender_status2", return_value="Ready"):
+            result = songcast_disband.classify_devices([{"ip": "10.0.0.2", "udn": "u"}])
+        assert result[0]["role"] == "standalone"
+
+    def test_disband_fails_when_a_device_is_unreadable(self):
+        with patch("songcast_disband.get_device_name", return_value="Study"), \
+             patch("songcast_disband.get_current_source", return_value=None), \
+             patch("songcast_disband.get_sender_status2", return_value=None):
+            assert songcast_disband.disband_group([{"ip": "10.0.0.2", "udn": "u"}]) is False
+
+    def test_total_query_failure_does_not_report_success(self):
+        """End to end: every SOAP call raising must not yield exit 0."""
+        with patch("songcast_disband.requests.post",
+                   side_effect=requests.RequestException("unreachable")), \
+             patch("songcast_disband.requests.get",
+                   side_effect=requests.RequestException("unreachable")):
+            assert songcast_disband.disband_group(
+                [{"ip": "10.0.0.2", "udn": "a"}, {"ip": "10.0.0.3", "udn": "b"}]) is False

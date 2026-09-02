@@ -145,6 +145,11 @@ DEVICES = load_devices_from_env()
 # Used to label Songcast senders when only their UDN is available in Sender Uri.
 NAME_CACHE: Dict[str, str] = {}
 
+# Receiver:1 constrains TransportState to Buffering|Playing|Stopped|Waiting.
+# "Connecting" is not a real state; "Waiting" means bound to a sender that is
+# not currently streaming, which still counts as grouped.
+_ACTIVE_TRANSPORT_STATES = ("playing", "buffering", "waiting")
+
 
 def parse_didl(didl: str) -> Dict[str, Optional[str]]:
     """Parse a DIDL-Lite metadata string to a minimal dict.
@@ -204,7 +209,7 @@ async def query_device(ip: str, udn: str, name: Optional[str] = None, debug: boo
         ip: Device IP address
         udn: Device UDN (used to build the device.xml URL and for sender mapping)
         name: Optional override for display name (usually left None)
-        debug: Unused here (kept for parity)
+        debug: Print the cause of Songcast query failures
         trace_songcast: When True, prints Sender Uri and Metadata head for diagnostics
 
     Returns:
@@ -276,30 +281,23 @@ async def query_device(ip: str, udn: str, name: Optional[str] = None, debug: boo
                     return await recv.action("Sender").async_call()
                 async def _get_transport_state():
                     return await recv.action("TransportState").async_call()
-                async def _get_status():
-                    return await recv.action("Status").async_call()
                 try:
-                    # Query transport state first to infer active receiver status
+                    # Receiver:1 declares TransportState with a single out-arg
+                    # named "Value". The old code read "TransportState"/"state",
+                    # which never matched, so this was permanently None.
                     try:
                         ts_res = await asyncio.wait_for(_get_transport_state(), timeout=2.0)
                         if isinstance(ts_res, dict):
-                            songcast_transport_state = (
-                                ts_res.get("TransportState")
-                                or ts_res.get("transportState")
-                                or ts_res.get("state")
-                            )
-                    except Exception:
+                            songcast_transport_state = ts_res.get("Value")
+                    except Exception as e:
+                        if debug:
+                            print(f"[DEBUG] {device_name}: Receiver.TransportState failed: {e}")
                         songcast_transport_state = None
-                    # Query status for additional context (not used for grouping decision)
-                    try:
-                        st_res = await asyncio.wait_for(_get_status(), timeout=2.0)
-                        if isinstance(st_res, dict):
-                            songcast_status = (
-                                st_res.get("Status")
-                                or st_res.get("status")
-                            )
-                    except Exception:
-                        songcast_status = None
+                    # There is no Receiver.Status action — Receiver:1 exposes only
+                    # Play, Stop, SetSender, Sender, ProtocolInfo, TransportState.
+                    # Status/Status2 belong to the Sender service on the *sending*
+                    # device, so they are not available here.
+                    songcast_status = None
 
                     sender_res = await asyncio.wait_for(_get_sender(), timeout=2.0)
                     if trace_songcast and isinstance(sender_res, dict):
@@ -333,7 +331,7 @@ async def query_device(ip: str, udn: str, name: Optional[str] = None, debug: boo
                             scheme = None
                         is_songcast_grouped = (
                             (scheme == "ohz") or (
-                                uri_present and scheme == "ohsongcast" and ts in ("playing", "buffering", "connecting")
+                                uri_present and scheme == "ohsongcast" and ts in _ACTIVE_TRANSPORT_STATES
                             )
                         )
                         songcast_sender_scheme = scheme
@@ -467,9 +465,18 @@ async def main_async():
     parser.add_argument("--trace-songcast", action="store_true", help="Trace Songcast Receiver Sender Uri/Metadata")
     args = parser.parse_args()
 
+    failures = 0
     for d in DEVICES:
-        r = await query_device(d["ip"], d["udn"], None, debug=args.debug, trace_songcast=args.trace_songcast)
-        print(format_result(r))
+        # Guarded per device: an unreachable or unresponsive box used to raise
+        # out of this loop, so every device after it went unreported.
+        try:
+            r = await query_device(d["ip"], d["udn"], None, debug=args.debug,
+                                   trace_songcast=args.trace_songcast)
+            print(format_result(r))
+        except Exception as e:
+            failures += 1
+            print(f"{d['ip']}: ✗ query failed: {e}")
+    return 1 if failures else 0
 
 def main():
     return asyncio.run(main_async())

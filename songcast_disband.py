@@ -29,12 +29,12 @@ Notes:
 import sys
 import os
 import re
-import html
 import socket
 import time
 import argparse
 import requests
 import xml.etree.ElementTree as ET
+from xml.sax.saxutils import escape as xml_escape
 
 from lpec_utils import bounded, safe_for_display
 
@@ -120,13 +120,29 @@ def load_devices(env_path=None, debug=False):
 
 _MAX_SOURCE_INDEX = 255
 
+# SOAP argument names are fixed identifiers, never user or device supplied.
+_ARG_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+
+# Receiver:1 constrains TransportState to Buffering|Playing|Stopped|Waiting.
+# "Connecting" is not a real state and was dead; "Waiting" means bound to a
+# sender that is not currently streaming, which is still an active group.
+_ACTIVE_TRANSPORT_STATES = ("playing", "buffering", "waiting")
+
 
 def _soap_out(text, name):
     """Read one named output argument from a SOAP response body.
 
-    Matched on the local tag name so it is namespace-agnostic, and unescaped so
-    a source called "Kitchen &amp; Diner" comes back as "Kitchen & Diner".
-    Returns None if the argument is absent or the body will not parse.
+    Matched on the local tag name so it is namespace-agnostic. Returns None if
+    the argument is absent or the body will not parse.
+
+    Note: no html.unescape() here. ElementTree already decodes XML entities, so
+    a source called "Kitchen &amp; Diner" on the wire is handed back as
+    "Kitchen & Diner" by the parser alone. Unescaping a second time corrupts
+    any value that legitimately contains an entity-looking substring —
+    "AT&amp;amp;T" (literally "AT&amp;T") would decode to "AT&T", and
+    "Bar &amp;copy; Grill" to "Bar © Grill". CLAUDE.md's html.unescape() rule
+    applies to DIDL that arrives as an undecoded string payload, not to text a
+    parser has already decoded.
     """
     if not text:
         return None
@@ -136,7 +152,7 @@ def _soap_out(text, name):
         return None
     for el in root.iter():
         if el.tag.rsplit("}", 1)[-1] == name:
-            return html.unescape((el.text or "").strip())
+            return (el.text or "").strip()
     return None
 
 
@@ -153,7 +169,17 @@ def _soap_request_with_params(ip, udn, service_path, service_urn, action, params
         "Content-Type": 'text/xml; charset="utf-8"',
     }
     if params:
-        param_xml = "".join(f"<{k}>{v}</{k}>" for k, v in params.items())
+        # Argument values must be escaped. Today's callers pass constants, but
+        # this is a generic helper in a codebase that routinely handles DIDL
+        # blobs and URIs full of <, & and " — routing one of those through here
+        # unescaped would produce a malformed envelope at best, and at worst let
+        # a device's own data inject elements into a request sent to another
+        # device. Names are restricted rather than escaped: an argument name is
+        # never dynamic, so anything odd is a programming error.
+        for k in params:
+            if not _ARG_NAME_RE.match(k):
+                raise ValueError(f"Invalid SOAP argument name: {k!r}")
+        param_xml = "".join(f"<{k}>{xml_escape(str(v))}</{k}>" for k, v in params.items())
         action_xml = f'<u:{action} xmlns:u="{service_urn}">{param_xml}</u:{action}>'
     else:
         action_xml = f'<u:{action} xmlns:u="{service_urn}"/>'
@@ -168,7 +194,12 @@ def _soap_request_with_params(ip, udn, service_path, service_urn, action, params
     )
     resp = requests.post(url, headers=headers, data=body, timeout=timeout)
     resp.raise_for_status()
-    return resp.text
+    # Return bytes, not resp.text: requests decodes text using the HTTP
+    # Content-Type charset and falls back to ISO-8859-1 when a text/* response
+    # omits it, which mojibakes non-ASCII room and source names. Handing the
+    # raw bytes to ElementTree lets the XML declaration decide, which is
+    # authoritative. (_soap_out accepts either.)
+    return resp.content
 
 
 def get_device_name(ip, udn, timeout=3):
@@ -177,7 +208,7 @@ def get_device_name(ip, udn, timeout=3):
         url = f"http://{ip}:55178/{udn}/Upnp/device.xml"
         resp = requests.get(url, timeout=timeout)
         resp.raise_for_status()
-        root = ET.fromstring(resp.text)
+        root = ET.fromstring(resp.content)
         # Handle namespaced and non-namespaced device.xml
         for ns in ["{urn:schemas-upnp-org:device-1-0}", ""]:
             el = root.find(f".//{ns}friendlyName")
@@ -255,7 +286,7 @@ def get_sender_status2(ip, udn, debug=False):
 def is_receiver_active(ip, udn, debug=False):
     """Check if a device is actively receiving Songcast audio."""
     state = get_receiver_transport_state(ip, udn, debug)
-    if state and state.lower() in ("playing", "buffering", "connecting"):
+    if state and state.lower() in _ACTIVE_TRANSPORT_STATES:
         return True
     # Also check if a sender URI is set (ohz:// or ohSongcast://)
     uri = get_receiver_sender_uri(ip, udn, debug)
@@ -382,8 +413,8 @@ def get_current_source(ip, udn, debug=False):
         resp = requests.post(url, headers=headers, data=body, timeout=5)
         resp.raise_for_status()
 
-        source_type = bounded(_soap_out(resp.text, "Type"))
-        source_name = bounded(_soap_out(resp.text, "Name"))
+        source_type = bounded(_soap_out(resp.content, "Type"))
+        source_name = bounded(_soap_out(resp.content, "Name"))
         if debug:
             print(
                 f"  [debug] {ip} current source: idx={idx} "
@@ -397,9 +428,15 @@ def get_current_source(ip, udn, debug=False):
 
 
 def classify_devices(devices, debug=False):
-    """Classify each device as 'receiver', 'sender', or 'standalone'.
+    """Classify each device as 'receiver', 'sender', 'standalone' or 'unreadable'.
 
     Returns a list of dicts with keys: ip, udn, name, role, source.
+
+    "unreadable" matters: every query helper returns None on failure, so a device
+    that cannot be reached at all — offline, refusing SOAP, or answering an action
+    name that does not exist — used to fall through to "standalone". A completely
+    dead fleet then looked identical to an idle one and the run reported success.
+    A device is only called standalone when it actually answered.
     """
     results = []
     for dev in devices:
@@ -426,6 +463,9 @@ def classify_devices(devices, debug=False):
             status = get_sender_status2(ip, udn, debug)
             if status and status.lower() == "sending":
                 role = "sender"
+            elif source is None and status is None:
+                # Neither the Product nor the Sender service answered.
+                role = "unreadable"
 
         results.append({
             "ip": ip,
@@ -461,6 +501,17 @@ def disband_group(devices, debug=False, stop_sender=False):
         print(f"  {safe_for_display(d['name'])} ({d['ip']}): {d['role']}")
     print("-" * 50)
 
+    unreadable = [d for d in classified if d["role"] == "unreadable"]
+    if unreadable:
+        print(f"\n✗ {len(unreadable)} device(s) could not be read:")
+        for d in unreadable:
+            print(f"    {safe_for_display(d['name'])} ({d['ip']})")
+        print("  Their Songcast state is unknown, so the group cannot be disbanded"
+              " reliably.")
+        if not debug:
+            print("  Re-run with --debug to see the underlying errors.")
+        return False
+
     if not receivers and not senders:
         print("No active Songcast group found. All devices are standalone.")
         return True
@@ -472,11 +523,25 @@ def disband_group(devices, debug=False, stop_sender=False):
         print(f"\n1. Disconnecting {len(receivers)} receiver(s) from Songcast group...")
         for d in receivers:
             print(f"  {safe_for_display(d['name'])} ({d['ip']})...")
-            # Clear the sender URI first
-            clear_receiver_sender(d["ip"], d["udn"], debug)
-            # Then stop the receiver
-            stop_receiver(d["ip"], d["udn"], debug)
-            print(f"  ✓ {safe_for_display(d['name'])} receiver cleared and stopped")
+            # Order matters: clearing the sender URI is what releases a "zombie"
+            # receiver still bound to a dead ohz:// URI. Receiver.Stop alone
+            # does not, so the clear must come first.
+            cleared = clear_receiver_sender(d["ip"], d["udn"], debug)
+            stopped = stop_receiver(d["ip"], d["udn"], debug)
+            if cleared and stopped:
+                print(f"  ✓ {safe_for_display(d['name'])} receiver cleared and stopped")
+            else:
+                # Previously both results were discarded and the tick printed
+                # unconditionally, so a receiver left bound to a dead sender
+                # was reported as disbanded.
+                failed = []
+                if not cleared:
+                    failed.append("clear sender URI")
+                if not stopped:
+                    failed.append("stop receiver")
+                print(f"  ✗ {safe_for_display(d['name'])}: failed to {' and '.join(failed)}"
+                      f"{'' if debug else ' (re-run with --debug for the cause)'}")
+                all_ok = False
     else:
         print("\n1. No receivers to disconnect.")
 
@@ -530,7 +595,13 @@ def disband_group(devices, debug=False, stop_sender=False):
             if src_ok and uri_ok:
                 print(f"  ✓ {safe_for_display(d['name'])}: standalone (source={safe_for_display(source['name'])}, no sender URI)")
             elif src_ok:
-                print(f"  ✓ {safe_for_display(d['name'])}: source={safe_for_display(source['name'])} (sender URI still set but source changed)")
+                # A still-set sender URI is exactly the zombie state this tool
+                # exists to clear, so it is a failure, not a qualified success.
+                # It used to be reported with a ✓ and did not affect the result.
+                print(f"  ✗ {safe_for_display(d['name'])}: source changed to "
+                      f"{safe_for_display(source['name'])} but sender URI is still set "
+                      f"({safe_for_display(uri, 60)}) — receiver is still bound")
+                all_ok = False
             else:
                 print(f"  ⚠ {safe_for_display(d['name'])}: still on Songcast source")
                 all_ok = False

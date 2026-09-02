@@ -91,6 +91,28 @@ Shared across most scripts: `DEVICE_N=<IP> [<UDN>]` — the UDN is optional; whe
 - **Disbanding must not stop the sender.** Ungrouping detaches the receivers; whoever is listening on the sender keeps listening. `Sender.Status2` drops from `Sending` back to `Ready` on its own once the last receiver detaches, so no action on the sender is needed (verified on hardware). `--stop-sender` opts in to the old `Playlist.Stop` behaviour.
 - `lpec_utils.py` is the shared verification layer used by both the grouping script and `tests/songcast_monitor.py`: `query_receiver_state`, `wait_for_state`, `check_transport_playing`, `check_sender_uri`, `format_state_summary`.
 
+### Writing tests that actually catch this codebase's bugs
+
+The recurring failure here is a wrong service/action/argument name swallowed by a
+broad `except`. A test that mocks `_soap_request` cannot catch that — it asserts
+the string the code *meant* to send, never the request it *would* send. So:
+
+- **Drive at least one test per helper down to a patched `requests.post`** and
+  assert the literal URL, `SOAPACTION` header and body elements. See
+  `TestSoapRequestConstruction` and `TestActionNamesMatchTheDevice`.
+- **Fixtures must look like real device output** — full SOAP envelope, real
+  namespaces, real entity escaping. A malformed fixture makes a test pass for
+  the wrong reason: it bails out in the parser before reaching the logic under
+  test, and the branch it names stays dead.
+- **Never assert an f-string against an identical f-string.** Several such tests
+  existed and validated nothing but CPython.
+- **`tests/conftest.py` fails any test that opens a socket.** CI has no devices;
+  a test that starts reaching hardware must fail loudly, not hang.
+- **Check new tests by mutation**: break the thing on purpose (rename an action,
+  change a port, loosen a tag match) and confirm the suite goes red. If it stays
+  green the test is decorative. Mind the harness itself — a bad pytest flag makes
+  every run exit non-zero and reports false kills.
+
 ### The LPEC feedback-loop test harness (`tests/`)
 
 Because SOAP calls can return HTTP 200 while the device silently fails to actually change state, this repo has a hardware-in-the-loop validation layer, not just unit tests:
@@ -108,6 +130,12 @@ Because SOAP calls can return HTTP 200 while the device silently fails to actual
 - **Service action names must be read off the device, never guessed.** `curl -s http://<IP>:55178/<UDN>/Upnp/<service-path>/service.xml` lists the real actions in seconds. Three invented names shipped in this repo for months, each silently swallowed by a bare `except`: `Sender.Sender` and `Receiver.Senders` do not exist (the Sender service has `PresentationUrl`, `Metadata`, `Audio`, `Status`, `Status2`, `Enabled`, `Attributes`; Receiver has `Play`, `Stop`, `SetSender`, `Sender`, `ProtocolInfo`, `TransportState`).
 - **`Sender.Metadata` is the authoritative source for a sender's `ohz://` URI** — its DIDL-Lite `<res>` element. Do not reconstruct the URI from the device UDN: the sender identifier in it is not always the bare UDN. The constructed `ohz://239.255.255.250:51972/<udn>` form remains a correct fallback for Linn senders only.
 - **Treat device responses as untrusted input.** Anything read back over SOAP/LPEC is whatever some box on the network chose to say, and several values flow straight into control actions on *other* devices (`Sender.Metadata` → `Receiver.SetSender` being the sharp one). Validate before use — `_uri_from_didl` in `songcast_group.py` accepts only the `ohz`/`ohm`/`ohu` schemes within length bounds, and falls back to the locally-constructed URI otherwise. Equally, don't promote a value observed on one device into a documented fact about how devices behave.
+- **Output-argument names are declared, not guessable.** `Receiver.TransportState` returns `{"Value": ...}` — not `TransportState`. `Product.SourceIndex`/`SourceCount` return `{"Value": <int>}`. Reading `.get("X") or .get("y") or ...` to "cover both" silently returns `None` forever when every guess is wrong; read the declared name. Beware `or` chains for numeric values too: `int(res.get("Value") or -1)` turns a legitimate index **0** into `-1`.
+- **`Product.SetSourceIndex` takes `Value`.** `aIndex` is a Linn Volkano-style name that `Product:4` does not use.
+- **`Receiver:1` has no `Status` action.** Its actions are exactly `Play`, `Stop`, `SetSender`, `Sender`, `ProtocolInfo`, `TransportState`. `Status`/`Status2` belong to `Sender:2`, on the *sending* device.
+- **`TransportState` is one of `Buffering|Playing|Stopped|Waiting`.** `"Connecting"` does not exist. `Waiting` means bound to a sender that is not currently streaming — that is still a formed group, so treat it as active.
+- **LPEC wire format** (captured, not inferred): `SUBSCRIBE Ds/X` replies `SUBSCRIBE <id>`, then events are `EVENT <subscription-id> <seq> <var> "<value>" ...`. The subscription id is a per-device counter and is **never 0**; the service name never appears on an event line. `Ds/Receiver` publishes `Uri`, `Metadata`, `TransportState`, `ProtocolInfo` — there is **no `Sender` and no `Status` variable**; the bound sender is `Uri`. Match variable names at a token boundary, or `SenderStatus "x"` gets harvested as `Status`.
+- **Pins: `InvokeId` takes the device's pin Id, not the UI ordinal.** `GetIdArray` returns something like `[1, 0, 2, 3, 0, 4]` — 0 entries are empty slots — so the Nth pin the user sees is not "Id N". Resolve via `resolve_pin_id()` (`play_pin.py`).
 - **Parse SOAP responses, don't regex them.** Use `_soap_out(text, name)` in `songcast_disband.py` — it parses with `ElementTree`, matches on the local tag name (namespace-agnostic) and `html.unescape()`s the result. The regexes it replaced silently dropped that unescaping, so a source named `Kitchen & Diner` came back as `Kitchen &amp; Diner`. XML is case-sensitive: `re.IGNORECASE` on tag names was always wrong.
 - **Bound and sanitise device text at the right boundaries** (both in `lpec_utils.py`, shared): `bounded()` caps a string before it is compared or substring-matched (source type/name drive role selection, which drives writes); `safe_for_display()` strips control characters, collapses whitespace and truncates before anything is printed — a device returning ANSI escapes can otherwise reposition the cursor and make a failed run read as a successful one. Sanitise at the print site only; comparisons always use the raw value.
 - **`Sender.Status` does not tell you whether a device is sending.** It reports `Enabled` whenever the Sender service is switched on — true on every idle device — so keying off it classifies the whole fleet as senders. Use `Sender.Status2` (`Ready` vs `Sending`).

@@ -93,6 +93,14 @@ Any local AI coding assistant (GitHub Copilot or otherwise) MUST run the followi
 - **Playlist:1** - Playback control (`Stop` used only under `songcast_disband.py --stop-sender`)
 - **Volkano:1** - Linn-specific device management (`Reboot` action - NOT in Product service!) — service path: `linn.co.uk-Volkano-1`
 
+**Output-argument names are declared, not guessable.** `Receiver.TransportState` → `{"Value": ...}`; `Product.SourceIndex`/`SourceCount` → `{"Value": <int>}`; `Product.SetSourceIndex` takes `Value` (never `aIndex`). Don't write `.get("A") or .get("b")` guess-chains — when every guess is wrong the result is a permanent silent `None`, and an `or` chain also turns a valid index `0` into the fallback.
+
+**`Receiver:1` has no `Status` action** (only `Play`, `Stop`, `SetSender`, `Sender`, `ProtocolInfo`, `TransportState`); `Status`/`Status2` are on `Sender:2`. `TransportState` ∈ `Buffering|Playing|Stopped|Waiting` — `"Connecting"` is not real, and `Waiting` (bound, sender idle) still counts as grouped.
+
+**LPEC wire format**, captured from firmware: `SUBSCRIBE Ds/X` → `SUBSCRIBE <id>`, then `EVENT <subscription-id> <seq> <var> "<value>" ...`. The id is a per-device counter, never 0, and the service name is absent from event lines. `Ds/Receiver` emits `Uri`, `Metadata`, `TransportState`, `ProtocolInfo` — **no `Sender`, no `Status`**; the bound sender is `Uri`. Anchor variable names at a token boundary.
+
+**Pins: `InvokeId` wants the device pin Id from `GetIdArray`** (e.g. `[1, 0, 2, 3, 0, 4]`, where 0 is an empty slot), not the 1-based UI number. Use `resolve_pin_id()`.
+
 **Verify action names against the device, never assume.** `curl -s http://<IP>:55178/<UDN>/Upnp/<service-path>/service.xml` lists them in seconds. Note that `/control` endpoints **ignore the service version** in both the URL path and the URN (`Sender-1/control` ≡ `Sender-2/control`; `Volkano-1` ≡ `Volkano-3`), so a version mismatch in a hardcoded path is never the cause of a failing call — suspect the action name. Only `service.xml` is version-strict.
 
 ### Songcast Multi-Room Architecture
