@@ -5,10 +5,14 @@ LPEC Utility Functions
 Shared functions for querying Linn DSM devices via LPEC (Linn Protocol for Eventing and Control).
 Used by both songcast_monitor.py and songcast_group.py for real-time state verification.
 
-LPEC Protocol:
+LPEC Protocol (verified against Linn DSM firmware, not inferred):
 - Port: 23 (telnet)
-- Subscribe: "SUBSCRIBE Ds/<Service>\r\n"
-- Response: "EVENT <seq> <service> <variable> "<value>" ..."
+- Subscribe: "SUBSCRIBE Ds/<Service>\r\n"  ->  "SUBSCRIBE <subscription-id>"
+- Event:     "EVENT <subscription-id> <seq> <variable> "<value>" ..."
+
+Note the service name does NOT appear on an event line; it is only implied by
+the subscription id returned from SUBSCRIBE. The subscription id is a per-device
+counter and is not 0.
 
 References:
 - https://docs.linn.co.uk/wiki/index.php/Developer:LPEC
@@ -31,6 +35,46 @@ MAX_FIELD_CHARS = 128  # longest device string used in matching
 DISPLAY_CHARS = 48  # longest device string echoed to the terminal
 
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+# --- LPEC wire format --------------------------------------------------------
+#
+# Captured live from Linn DSM firmware (port 23):
+#
+#   ALIVE Ds 4c494e4e-...
+#   SUBSCRIBE 82
+#   EVENT 82 0 Uri "" Metadata "" TransportState "Stopped" ProtocolInfo "ohz:*:*:*,..."
+#
+# So an event line is:  EVENT <subscription-id> <seq> <var> "<value>" ...
+# The subscription id is a per-device counter, NOT 0, and the service name never
+# appears on the wire — it is only implied by the SUBSCRIBE reply.
+#
+# Ds/Receiver publishes exactly these four variables. There is no "Sender" and
+# no "Status" variable: the receiver's bound sender is reported as **Uri**.
+# (Status/Status2 belong to Ds/Sender, on the sending device.)
+RECEIVER_EVENT_VARIABLES = ("Uri", "Metadata", "TransportState", "ProtocolInfo")
+
+EVENT_LINE_RE = re.compile(r'^EVENT\s+\d+\s+\d+\s', re.MULTILINE)
+
+
+def parse_event_variables(buffer: str) -> Dict[str, str]:
+    """Extract `Name "value"` pairs from any EVENT lines in *buffer*.
+
+    Each name is matched at a token boundary. An unanchored search would let a
+    longer variable satisfy a shorter name — `SenderStatus "x"` would be
+    harvested as `Status`, and a name appearing inside another variable's
+    quoted value (Metadata carries whole DIDL documents) would be picked up too.
+    """
+    state: Dict[str, str] = {}
+    for line in buffer.splitlines():
+        line = line.strip()
+        if not line.startswith("EVENT"):
+            continue
+        for var in RECEIVER_EVENT_VARIABLES:
+            m = re.search(r'(?:^|\s)' + var + r'\s+"([^"]*)"', line)
+            if m:
+                state[var] = m.group(1)
+    return state
 
 
 def bounded(value: Optional[str], limit: int = MAX_FIELD_CHARS) -> str:
@@ -65,8 +109,10 @@ def query_receiver_state(ip: str, timeout: float = 3.0) -> Optional[Dict[str, st
         timeout: Connection and read timeout in seconds
         
     Returns:
-        Dictionary with Receiver state variables (TransportState, Sender, Status, ProtocolInfo)
-        or None if connection fails
+        Dictionary with Receiver state variables (Uri, Metadata, TransportState,
+        ProtocolInfo) or None if connection fails. "Uri" is the sender the
+        receiver is bound to — Ds/Receiver publishes no "Sender" or "Status"
+        variable.
         
     Example:
         state = query_receiver_state("172.24.32.210")
@@ -104,7 +150,7 @@ def query_receiver_state(ip: str, timeout: float = 3.0) -> Optional[Dict[str, st
         # Subscribe to Ds/Receiver
         sock.sendall("SUBSCRIBE Ds/Receiver\r\n".encode('utf-8'))
         
-        # Read initial EVENT 0 with current state
+        # Read the initial EVENT carrying current state.
         buffer = ""
         start = time.time()
         while time.time() - start < timeout:
@@ -113,38 +159,14 @@ def query_receiver_state(ip: str, timeout: float = 3.0) -> Optional[Dict[str, st
                 if not chunk:
                     break
                 buffer += chunk
-                # Look for EVENT 0
-                if re.search(r'^EVENT\s+0\s+', buffer, re.MULTILINE):
+                if EVENT_LINE_RE.search(buffer):
                     break
             except socket.timeout:
                 break
-        
+
         sock.close()
-        
-        # Parse state from EVENT 0
-        state = {}
-        for line in buffer.splitlines():
-            line = line.strip()
-            if not line.startswith("EVENT"):
-                continue
-            
-            # Extract variables
-            m = re.search(r'TransportState\s+"([^"]*)"', line)
-            if m:
-                state['TransportState'] = m.group(1)
-            
-            m = re.search(r'Sender\s+"([^"]*)"', line)
-            if m:
-                state['Sender'] = m.group(1)
-            
-            m = re.search(r'Status\s+"([^"]*)"', line)
-            if m:
-                state['Status'] = m.group(1)
-            
-            m = re.search(r'ProtocolInfo\s+"([^"]*)"', line)
-            if m:
-                state['ProtocolInfo'] = m.group(1)
-        
+
+        state = parse_event_variables(buffer)
         return state if state else None
         
     except socket.timeout:
@@ -223,7 +245,11 @@ def check_transport_playing(ip: str, timeout: float = 3.0) -> bool:
 
 def check_sender_uri(ip: str, expected_scheme: str = 'ohz', timeout: float = 3.0) -> Tuple[bool, Optional[str]]:
     """
-    Check if device's Sender URI matches expected scheme.
+    Check whether the receiver's bound sender URI matches the expected scheme.
+
+    The URI is published by Ds/Receiver as the **Uri** variable. This used to
+    read a "Sender" variable, which the firmware never emits, so the function
+    returned (False, '') no matter what the device was bound to.
     
     Args:
         ip: Device IP address
@@ -242,7 +268,7 @@ def check_sender_uri(ip: str, expected_scheme: str = 'ohz', timeout: float = 3.0
     if not state:
         return False, None
     
-    sender_uri = state.get('Sender', '')
+    sender_uri = state.get('Uri', '')
     matches = sender_uri.startswith(f"{expected_scheme}://")
     
     return matches, sender_uri
@@ -266,8 +292,8 @@ def format_state_summary(state: Optional[Dict[str, str]]) -> str:
     if 'TransportState' in state:
         parts.append(f"Transport={safe_for_display(state['TransportState'])}")
 
-    if 'Sender' in state:
-        sender = state['Sender']
+    if 'Uri' in state:
+        sender = state['Uri']
         if sender.startswith('ohz://'):
             parts.append("Sender=ohz://...")
         elif sender.startswith('ohSongcast://'):

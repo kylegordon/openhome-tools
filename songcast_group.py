@@ -29,7 +29,8 @@ Example (.env-driven, minimal):
 Notes:
 - Uses openhomedevice to control Product:4 and Receiver services.
 - Ensures receiver source is Songcast and joins sender via Receiver.SetSender.
-- Prefers ohz URIs discovered via Receiver.Senders; falls back to ohSongcast descriptor.
+- Reads the sender's own ohz URI from Sender.Metadata; falls back to a URI
+  constructed from the sender UDN, then to an ohSongcast descriptor.
 - Supports .env configuration: define DEVICE_n entries, SONGCAST_SENDER and SONGCAST_RECEIVERS.
 - To find a device UDN: python3 find_linn_udn.py <IP_ADDRESS>
 - Recommended: pipe terminal output to a file for reliable reading.
@@ -96,6 +97,13 @@ _SONGCAST_SCHEMES = ("ohz", "ohm", "ohu")
 _MAX_DIDL_BYTES = 65536
 _MAX_URI_BYTES = 512
 
+# Receiver:1 constrains TransportState to exactly Buffering|Playing|Stopped|Waiting
+# (allowedValueList in the service description). "Connecting" is not one of them —
+# the code used to test for it, which was simply dead. "Waiting" means bound to a
+# sender that is not currently streaming: that is a formed group, so it counts as
+# active for grouping purposes.
+_ACTIVE_TRANSPORT_STATES = ("playing", "buffering", "waiting")
+
 def _uri_from_didl(metadata):
     """Extract a Songcast stream URI from a DIDL-Lite descriptor's <res> element.
 
@@ -117,7 +125,11 @@ def _uri_from_didl(metadata):
         return None
     from urllib.parse import urlparse
     for el in root.iter():
-        if not el.tag.endswith('res'):
+        # Exact local-name match. endswith('res') would also match <xres> or
+        # <oh:sourceres>, letting a sender shadow its real <res> with an
+        # element that appears earlier in the document and redirect the
+        # receiver somewhere of its choosing.
+        if el.tag.rsplit('}', 1)[-1] != 'res':
             continue
         uri = (el.text or '').strip()
         if not uri or len(uri) > _MAX_URI_BYTES:
@@ -181,7 +193,8 @@ class LinnSongcastGrouper:
                 if prod is None:
                     return None
                 sc = await prod.action("SourceCount").async_call()
-                count = int(sc.get("Value") or 8)
+                raw_count = sc.get("Value")
+                count = int(raw_count) if raw_count is not None else 8
                 found = None
                 if self.debug:
                     print("  [DEBUG] Scanning sources for Songcast/Receiver:")
@@ -228,7 +241,8 @@ class LinnSongcastGrouper:
                 if prod is None:
                     return None
                 idx_res = await prod.action("SourceIndex").async_call()
-                cur_idx = int(idx_res.get("Value") or idx_res.get("Index") or -1)
+                raw_idx = idx_res.get("Value")
+                cur_idx = int(raw_idx) if raw_idx is not None else -1
                 if cur_idx < 0:
                     return None
                 sres = await prod.action("Source").async_call(Index=cur_idx)
@@ -257,10 +271,11 @@ class LinnSongcastGrouper:
                     print(f"⚠ Songcast source not found on {name}; skipping source change")
                     return False
 
-                try:
-                    await prod.action("SetSourceIndex").async_call(aIndex=idx)
-                except Exception:
-                    await prod.action("SetSourceIndex").async_call(Value=idx)
+                # Product:4 declares SetSourceIndex in=['Value']. The old code
+                # tried aIndex first and fell back to Value; aIndex is a Linn
+                # Volkano-style name that Product does not use, so the first
+                # call could only ever fail and the fallback did all the work.
+                await prod.action("SetSourceIndex").async_call(Value=idx)
                 print(f"✓ {name} source set to Songcast (index {idx})")
                 return True
             except Exception as e:
@@ -293,8 +308,8 @@ class LinnSongcastGrouper:
                     pass
                 try:
                     ts = await recv.action("TransportState").async_call()
-                    state = (ts.get("TransportState") or ts.get("state") or "").lower()
-                    return state in ("playing", "buffering", "connecting")
+                    state = (ts.get("Value") or "").lower()
+                    return state in _ACTIVE_TRANSPORT_STATES
                 except Exception:
                     return False
             except Exception:
@@ -452,11 +467,11 @@ class LinnSongcastGrouper:
                             await asyncio.sleep(0.5)
                             try:
                                 ts = await recv.action("TransportState").async_call()
-                                state = (ts.get("TransportState") or ts.get("state") or "").lower()
+                                state = (ts.get("Value") or "").lower()
                                 grouped_now = await self._is_grouped(receiver_dev)
                                 if self.debug:
                                     print(f"  State={state}, grouped={grouped_now}, cand={cand}")
-                                if grouped_now or (str(cand).lower().startswith("ohz://") and state in ("playing", "buffering", "connecting")):
+                                if grouped_now or (str(cand).lower().startswith("ohz://") and state in _ACTIVE_TRANSPORT_STATES):
                                     ok = True
                                     uri = cand
                                     break
@@ -570,7 +585,13 @@ class LinnSongcastGrouper:
                             print("  Could not query device state (offline or telnet disabled?)")
                         all_ok = False
                 else:
-                    print("  (LPEC verification skipped - lpec_utils module not available)")
+                    # The API check alone accepts a stale ohz:// URI on a
+                    # receiver that never switched source, so losing LPEC means
+                    # losing the only check that proves audio is flowing. Report
+                    # the run as unverified rather than as a success.
+                    print("  ⚠ LPEC verification unavailable (lpec_utils module not importable)")
+                    print("    Grouping could not be confirmed; treating as unverified.")
+                    all_ok = False
 
 
             print("\n" + "=" * 50)

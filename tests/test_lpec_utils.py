@@ -21,7 +21,7 @@ class TestFormatStateSummary:
     def test_full_state(self):
         state = {
             "TransportState": "Playing",
-            "Sender": "ohz://239.255.255.250:51972/4c494e4e-abc",
+            "Uri": "ohz://239.255.255.250:51972/4c494e4e-abc",
             "Status": "Yes",
         }
         result = lpec_utils.format_state_summary(state)
@@ -30,12 +30,12 @@ class TestFormatStateSummary:
         assert "Status=Yes" in result
 
     def test_ohsongcast_sender(self):
-        state = {"Sender": "ohSongcast://some-descriptor?room=Living"}
+        state = {"Uri": "ohSongcast://some-descriptor?room=Living"}
         result = lpec_utils.format_state_summary(state)
         assert "Sender=ohSongcast://..." in result
 
     def test_empty_sender(self):
-        state = {"Sender": ""}
+        state = {"Uri": ""}
         result = lpec_utils.format_state_summary(state)
         assert "Sender=(empty)" in result
 
@@ -80,20 +80,20 @@ class TestCheckTransportPlaying:
 class TestCheckSenderUri:
     @patch("lpec_utils.query_receiver_state")
     def test_ohz_match(self, mock_query):
-        mock_query.return_value = {"Sender": "ohz://239.255.255.250:51972/some-udn"}
+        mock_query.return_value = {"Uri": "ohz://239.255.255.250:51972/some-udn"}
         matches, uri = lpec_utils.check_sender_uri("1.2.3.4", "ohz")
         assert matches is True
         assert uri.startswith("ohz://")
 
     @patch("lpec_utils.query_receiver_state")
     def test_ohz_no_match(self, mock_query):
-        mock_query.return_value = {"Sender": "ohSongcast://descriptor"}
+        mock_query.return_value = {"Uri": "ohSongcast://descriptor"}
         matches, uri = lpec_utils.check_sender_uri("1.2.3.4", "ohz")
         assert matches is False
 
     @patch("lpec_utils.query_receiver_state")
     def test_empty_sender(self, mock_query):
-        mock_query.return_value = {"Sender": ""}
+        mock_query.return_value = {"Uri": ""}
         matches, uri = lpec_utils.check_sender_uri("1.2.3.4", "ohz")
         assert matches is False
 
@@ -167,7 +167,7 @@ class TestWaitForState:
         mock_query.return_value = {
             "TransportState": "Playing",
             "Status": "Yes",
-            "Sender": "ohz://239.255.255.250:51972/abc",
+            "Uri": "ohz://239.255.255.250:51972/abc",
         }
         success, state = lpec_utils.wait_for_state(
             "1.2.3.4",
@@ -186,40 +186,41 @@ class TestQueryReceiverState:
         mock_sock = MagicMock()
         mock_socket_cls.return_value = mock_sock
 
-        # Simulate LPEC conversation
-        alive_msg = b"ALIVE Ds 4c494e4e-0026-0f22-5661-01531488013f\r\n"
+        # Verbatim capture from a Linn DSM on port 23. Note the shape:
+        # "EVENT <subscription-id> <seq> ...", the id is not 0, the service
+        # name is absent, and the bound sender is published as Uri.
+        alive_msg = (
+            b"ALIVE Ds 4c494e4e-0026-0f22-5661-01531488013f\r\n"
+            b"ALIVE MediaRenderer 4c494e4e-0026-0f22-5661-015314880171\r\n"
+        )
         event_msg = (
-            b'EVENT 0 Ds/Receiver TransportState "Playing" '
-            b'Sender "ohz://239.255.255.250:51972/abc" '
-            b'Status "Yes" '
-            b'ProtocolInfo "ohz:*:*:*"\r\n'
+            b'SUBSCRIBE 114\r\n'
+            b'EVENT 114 0 Uri "ohz://239.255.255.250:51972/abc" Metadata "" '
+            b'TransportState "Playing" '
+            b'ProtocolInfo "ohz:*:*:*,ohm:*:*:*,ohu:*.*.*"\r\n'
         )
 
-        # recv returns ALIVE first, then EVENT 0 after subscribe
-        call_count = [0]
+        # recv delivers ALIVE first, then the event after SUBSCRIBE.
+        chunks = iter([alive_msg, event_msg])
+
         def recv_side_effect(size):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                return alive_msg
-            elif call_count[0] == 2:
-                return b""  # empty after alive drain
-            elif call_count[0] == 3:
-                return event_msg
-            return b""
+            return next(chunks, b"")
 
         mock_sock.recv.side_effect = recv_side_effect
 
         state = lpec_utils.query_receiver_state("172.24.32.210", timeout=2.0)
 
-        # Verify we connected to port 23
         mock_sock.connect.assert_called_once_with(("172.24.32.210", 23))
-        # Verify we subscribed
         calls = [c for c in mock_sock.sendall.call_args_list]
-        subscribe_sent = any(b"SUBSCRIBE Ds/Receiver" in c[0][0] for c in calls)
-        assert subscribe_sent
+        assert any(b"SUBSCRIBE Ds/Receiver" in c[0][0] for c in calls)
 
-        if state:
-            assert state.get("TransportState") == "Playing"
+        # Unconditional: the old `if state:` guard meant this never ran.
+        assert state is not None, "real EVENT frame must parse"
+        assert state["TransportState"] == "Playing"
+        assert state["Uri"] == "ohz://239.255.255.250:51972/abc"
+        assert state["ProtocolInfo"] == "ohz:*:*:*,ohm:*:*:*,ohu:*.*.*"
+        assert "Sender" not in state, "Ds/Receiver publishes no Sender variable"
+        assert "Status" not in state, "Ds/Receiver publishes no Status variable"
 
     @patch("lpec_utils.socket.socket")
     def test_connection_refused(self, mock_socket_cls):
@@ -243,3 +244,49 @@ class TestQueryReceiverState:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestEventWireFormat:
+    """The LPEC frame shape, pinned against a real capture.
+
+    Frame: EVENT <subscription-id> <seq> <var> "<value>" ...
+    The subscription id is a per-device counter, never 0, and Ds/Receiver
+    publishes Uri/Metadata/TransportState/ProtocolInfo — no Sender, no Status.
+    """
+
+    REAL_FRAME = (
+        'EVENT 114 0 Uri "ohz://239.255.255.250:51972/abc" Metadata "" '
+        'TransportState "Stopped" ProtocolInfo "ohz:*:*:*,ohm:*:*:*,ohu:*.*.*"'
+    )
+
+    def test_sentinel_matches_a_real_frame(self):
+        """The old r'^EVENT\\s+0\\s+' never matched, so every query blocked for
+        its full timeout instead of returning as soon as the event arrived."""
+        assert lpec_utils.EVENT_LINE_RE.search(self.REAL_FRAME) is not None
+
+    def test_sentinel_rejects_a_non_event_line(self):
+        assert lpec_utils.EVENT_LINE_RE.search("SUBSCRIBE 114") is None
+        assert lpec_utils.EVENT_LINE_RE.search("ALIVE Ds 4c494e4e-x") is None
+
+    def test_parses_all_four_receiver_variables(self):
+        state = lpec_utils.parse_event_variables(self.REAL_FRAME)
+        assert state["Uri"] == "ohz://239.255.255.250:51972/abc"
+        assert state["TransportState"] == "Stopped"
+        assert state["ProtocolInfo"] == "ohz:*:*:*,ohm:*:*:*,ohu:*.*.*"
+        assert state["Metadata"] == ""
+
+    def test_variable_names_are_matched_at_a_token_boundary(self):
+        """An unanchored search lets a longer name satisfy a shorter one.
+
+        'ReceiverUri "decoy"' must not be harvested as the Uri variable, and it
+        appears first on the line, so a loose match would win.
+        """
+        line = 'EVENT 7 0 ReceiverUri "decoy" Uri "ohz://real" TransportState "Playing"'
+        state = lpec_utils.parse_event_variables(line)
+        assert state["Uri"] == "ohz://real"
+        assert state["TransportState"] == "Playing"
+
+    def test_a_name_inside_another_value_is_not_harvested(self):
+        line = 'EVENT 7 0 Metadata "<DIDL>Uri \'x\' junk</DIDL>" TransportState "Playing"'
+        state = lpec_utils.parse_event_variables(line)
+        assert state.get("TransportState") == "Playing"

@@ -9,7 +9,7 @@ Run with:
 import asyncio
 import os
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import songcast_group  # noqa: E402  (import-succeeds is itself a regression test)
@@ -209,3 +209,183 @@ class TestUriFromDidlRejectsUntrustedInput:
         padding = "<!--" + ("x" * songcast_group._MAX_DIDL_BYTES) + "-->"
         didl = padding + self._didl("ohz://239.255.255.250:51972/abc")
         assert songcast_group._uri_from_didl(didl) is None
+
+
+class TestUriFromDidlTagMatching:
+    """<res> must be matched by exact local name.
+
+    A suffix test also matches <xres> or <oh:sourceres>, so a sender could put a
+    decoy earlier in the document and have it win over its real <res> — and the
+    winner is fed straight to Receiver.SetSender on another device.
+    """
+
+    def test_decoy_xres_does_not_shadow_the_real_res(self):
+        didl = (
+            "<DIDL-Lite><item>"
+            "<xres>ohz://239.255.255.250:51972/DECOY</xres>"
+            '<res protocolInfo="ohz:*:*:u">ohz://239.255.255.250:51972/REAL</res>'
+            "</item></DIDL-Lite>"
+        )
+        assert songcast_group._uri_from_didl(didl) == "ohz://239.255.255.250:51972/REAL"
+
+    def test_namespaced_decoy_is_ignored(self):
+        didl = (
+            '<DIDL-Lite xmlns:oh="urn:example:oh"><item>'
+            "<oh:sourceres>ohm://239.0.0.1:51972/DECOY</oh:sourceres>"
+            "<res>ohz://239.255.255.250:51972/REAL</res>"
+            "</item></DIDL-Lite>"
+        )
+        assert songcast_group._uri_from_didl(didl) == "ohz://239.255.255.250:51972/REAL"
+
+    def test_namespaced_res_is_still_accepted(self):
+        didl = (
+            '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"><item>'
+            "<res>ohz://239.255.255.250:51972/abc</res>"
+            "</item></DIDL-Lite>"
+        )
+        assert songcast_group._uri_from_didl(didl) == "ohz://239.255.255.250:51972/abc"
+
+
+class TestSenderDescriptorIsReadViaMetadata:
+    """The sender's own descriptor comes from Sender.Metadata.
+
+    The Sender service has no "Sender" action — that lives on Receiver. Calling
+    a non-existent action raises KeyError inside async_upnp_client before any
+    request is sent, and the surrounding except swallowed it for months.
+    """
+
+    @staticmethod
+    def _no_sleep():
+        """The join poll sleeps between attempts; unit tests must not wall-clock."""
+
+        async def _instant(_seconds):
+            return None
+
+        return patch("songcast_group.asyncio.sleep", _instant)
+
+    @staticmethod
+    def _make_devices(metadata_value):
+        real_didl = (
+            '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/">'
+            '<item id="0" restricted="True">'
+            '<res protocolInfo="ohz:*:*:u">'
+            "ohz://239.255.255.250:51972/4c494e4e-sender</res>"
+            "</item></DIDL-Lite>"
+        )
+
+        async def metadata_call():
+            return {"Value": metadata_value or real_didl}
+
+        sender_service = MagicMock()
+        sender_service.action.return_value = MagicMock(async_call=metadata_call)
+
+        sender_dev = MagicMock()
+        sender_dev.device.service_id.return_value = sender_service
+
+        async def room():
+            return "Study"
+
+        async def name():
+            return "Majik DSM"
+
+        sender_dev.room = room
+        sender_dev.name = name
+
+        async def recv_call(**kwargs):
+            return {}
+
+        recv_service = MagicMock()
+        recv_service.action.return_value = MagicMock(async_call=recv_call)
+        receiver_dev = MagicMock()
+        receiver_dev.device.service_id.return_value = recv_service
+
+        return receiver_dev, sender_dev, sender_service
+
+    def test_sender_service_is_queried_with_the_Metadata_action(self):
+        receiver_dev, sender_dev, sender_service = self._make_devices(None)
+        with self._no_sleep(), patch("songcast_group.requests.post") as post:
+            post.return_value = MagicMock(
+                status_code=200, raise_for_status=lambda: None
+            )
+            asyncio.run(
+                _grouper()._receiver_join(
+                    receiver_dev,
+                    sender_dev,
+                    "1.2.3.4",
+                    "recv-udn",
+                    "4c494e4e-sender",
+                    "Study",
+                )
+            )
+        actions = [c.args[0] for c in sender_service.action.call_args_list]
+        assert "Metadata" in actions, f"expected Sender.Metadata, got {actions}"
+        assert "Sender" not in actions, "Sender service has no 'Sender' action"
+
+    def test_advertised_uri_outranks_the_constructed_one(self):
+        """The device's own answer must be tried first, not the UDN guess."""
+        didl = (
+            '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"><item>'
+            "<res>ohz://239.255.255.250:51972/advertised-id</res>"
+            "</item></DIDL-Lite>"
+        )
+        receiver_dev, sender_dev, _ = self._make_devices(didl)
+        with self._no_sleep(), patch("songcast_group.requests.post") as post:
+            post.return_value = MagicMock(
+                status_code=200, raise_for_status=lambda: None
+            )
+            asyncio.run(
+                _grouper()._receiver_join(
+                    receiver_dev,
+                    sender_dev,
+                    "1.2.3.4",
+                    "recv-udn",
+                    "4c494e4e-sender",
+                    "Study",
+                )
+            )
+        first_body = post.call_args_list[0][1]["data"]
+        assert "advertised-id" in first_body
+
+
+class TestTransportStateOutputArgument:
+    """Receiver.TransportState declares a single out-arg named "Value".
+
+    The code used to read .get("TransportState") / .get("state"), neither of
+    which the library ever returns, so every transport-state check silently
+    evaluated as "not playing".
+    """
+
+    @staticmethod
+    def _receiver_returning(state_dict):
+        async def ts_call():
+            return state_dict
+
+        async def sender_call():
+            return {"Uri": "", "Metadata": ""}
+
+        svc = MagicMock()
+        svc.action.side_effect = lambda n: {
+            "TransportState": MagicMock(async_call=ts_call),
+            "Sender": MagicMock(async_call=sender_call),
+        }[n]
+        dev = MagicMock()
+        dev.device.service_id.return_value = svc
+        return dev
+
+    def test_playing_is_detected_from_the_Value_key(self):
+        dev = self._receiver_returning({"Value": "Playing"})
+        assert asyncio.run(_grouper()._is_grouped(dev)) is True
+
+    def test_waiting_counts_as_grouped(self):
+        """Waiting = bound to a sender that is not currently streaming."""
+        dev = self._receiver_returning({"Value": "Waiting"})
+        assert asyncio.run(_grouper()._is_grouped(dev)) is True
+
+    def test_stopped_is_not_grouped(self):
+        dev = self._receiver_returning({"Value": "Stopped"})
+        assert asyncio.run(_grouper()._is_grouped(dev)) is False
+
+    def test_legacy_key_is_not_consulted(self):
+        """If the code still read "TransportState", this would wrongly pass."""
+        dev = self._receiver_returning({"TransportState": "Playing"})
+        assert asyncio.run(_grouper()._is_grouped(dev)) is False
