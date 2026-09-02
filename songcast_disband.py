@@ -4,12 +4,11 @@ Linn OpenHome Songcast Group Disbander
 
 Purpose:
 - Find the Songcast sender among all devices in .env
-- Stop playback on the sender
 - Disconnect all receivers from the Songcast group
-- Return every device to standalone mode
+- Return every device to standalone mode, leaving the sender playing
 
 Usage:
-    .venv/bin/python songcast_disband.py [--debug]
+    .venv/bin/python songcast_disband.py [--debug] [--stop-sender]
 
 Configuration (.env):
     DEVICE_1=<IP>             (UDN auto-discovered via LPEC)
@@ -21,7 +20,9 @@ Notes:
   provided in .env. Sender/receiver roles are always auto-detected by
   querying each device's Songcast state.
 - Uses Receiver.Stop via SOAP to disconnect receivers.
-- Uses Playlist.Stop via SOAP to stop sender playback.
+- Sender playback is left alone: ungrouping must not interrupt whoever is
+  listening on the sender, and the Sender service returns to "Ready" by itself
+  once the last receiver detaches. --stop-sender opts in to stopping it.
 - No .env sender/receiver role configuration needed; all devices are probed.
 """
 
@@ -198,6 +199,32 @@ def get_receiver_sender_uri(ip, udn, debug=False):
         return None
 
 
+def get_sender_status2(ip, udn, debug=False):
+    """Query Sender.Status2 via SOAP. Returns "Ready"/"Sending"/... or None.
+
+    Status2 is the value that says whether this device is actually streaming to
+    receivers. Sender.Status must NOT be used for that: it reports "Enabled"
+    whenever the Sender service is switched on, which is true on every idle
+    device, so keying off it classifies the entire fleet as senders.
+    """
+    try:
+        text = _soap_request(
+            ip, udn,
+            "av.openhome.org-Sender-2",
+            "urn:av-openhome-org:service:Sender:2",
+            "Status2",
+        )
+        m = re.search(r"<Value>([^<]+)</Value>", text, re.IGNORECASE)
+        status = m.group(1).strip() if m else None
+        if debug:
+            print(f"  [debug] {ip} Sender.Status2 = {status}")
+        return status
+    except Exception as e:
+        if debug:
+            print(f"  [debug] {ip} Sender.Status2 query failed: {e}")
+        return None
+
+
 def is_receiver_active(ip, udn, debug=False):
     """Check if a device is actively receiving Songcast audio."""
     state = get_receiver_transport_state(ip, udn, debug)
@@ -358,25 +385,12 @@ def classify_devices(devices, debug=False):
             elif "sender" in src_type:
                 role = "sender"
 
-        # If not identified as receiver by source, check if this device has
-        # an active Sender service (it's the sender/leader)
+        # If not identified as receiver by source, check whether this device is
+        # actively streaming to others (it's the sender/leader).
         if role == "standalone":
-            try:
-                text = _soap_request(
-                    ip, udn,
-                    "av.openhome.org-Sender-1",
-                    "urn:av-openhome-org:service:Sender:1",
-                    "Status",
-                )
-                m = re.search(r"<Value>([^<]+)</Value>", text, re.IGNORECASE)
-                status = m.group(1).strip().lower() if m else ""
-                if debug:
-                    print(f"  [debug] {ip} Sender.Status = {status}")
-                if status == "enabled":
-                    role = "sender"
-            except Exception as e:
-                if debug:
-                    print(f"  [debug] {ip} Sender.Status query failed: {e}")
+            status = get_sender_status2(ip, udn, debug)
+            if status and status.lower() == "sending":
+                role = "sender"
 
         results.append({
             "ip": ip,
@@ -388,8 +402,16 @@ def classify_devices(devices, debug=False):
     return results
 
 
-def disband_group(devices, debug=False):
-    """Disband the Songcast group: stop receivers first, then stop the sender.
+def disband_group(devices, debug=False, stop_sender=False):
+    """Disband the Songcast group, returning every device to standalone mode.
+
+    Disbanding ungroups the *receivers*; it deliberately leaves the sender
+    playing. Whoever is listening on the sender should keep listening — the
+    Sender service drops back to "Ready" on its own once the last receiver
+    detaches, so stopping its playback is neither necessary nor wanted.
+
+    Pass stop_sender=True (CLI: --stop-sender) for the old behaviour of also
+    halting playback on the sender.
 
     Returns True if all operations succeeded.
     """
@@ -440,19 +462,27 @@ def disband_group(devices, debug=False):
     else:
         print("\n2. No receivers to switch.")
 
-    # Step 3: Stop sender playback
+    # Step 3: Leave the sender playing.
+    #
+    # Ungrouping must not interrupt the person listening on the sender. Once the
+    # receivers above have cleared their sender URI, the sender's Sender service
+    # returns to "Ready" by itself with no action needed here.
     if senders:
-        print("\n3. Stopping playback on sender(s)...")
-        for d in senders:
-            print(f"  Stopping {d['name']} ({d['ip']})...")
-            ok = stop_playlist(d["ip"], d["udn"], debug)
-            if ok:
-                print(f"  ✓ {d['name']} playback stopped")
-            else:
-                print(f"  ✗ Failed to stop playback on {d['name']}")
-                all_ok = False
+        if stop_sender:
+            print(f"\n3. Stopping playback on {len(senders)} sender(s) (--stop-sender)...")
+            for d in senders:
+                print(f"  Stopping {d['name']} ({d['ip']})...")
+                ok = stop_playlist(d["ip"], d["udn"], debug)
+                if ok:
+                    print(f"  ✓ {d['name']} playback stopped")
+                else:
+                    print(f"  ✗ Failed to stop playback on {d['name']}")
+                    all_ok = False
+        else:
+            for d in senders:
+                print(f"\n3. Leaving {d['name']} ({d['ip']}) playing (use --stop-sender to stop it).")
     else:
-        print("\n3. No sender found to stop.")
+        print("\n3. No sender found.")
 
     # Step 4: Verify all devices are now standalone
     print("\n4. Verifying devices are standalone...")
@@ -472,7 +502,15 @@ def disband_group(devices, debug=False):
         elif d["role"] == "standalone":
             print(f"  ✓ {d['name']}: already standalone")
         elif d["role"] == "sender":
-            print(f"  ✓ {d['name']}: sender (playback stopped)")
+            if stop_sender:
+                print(f"  ✓ {d['name']}: sender (playback stopped)")
+            else:
+                status = get_sender_status2(d["ip"], d["udn"], debug)
+                if status and status.lower() == "sending":
+                    print(f"  ⚠ {d['name']}: sender still streaming (a receiver may not have detached)")
+                    all_ok = False
+                else:
+                    print(f"  ✓ {d['name']}: sender released, still playing locally")
 
     print("\n" + "=" * 50)
     if all_ok:
@@ -487,6 +525,12 @@ def main():
         description="Disband Linn OpenHome Songcast group and return all devices to standalone mode"
     )
     parser.add_argument("--debug", action="store_true", help="Enable debug output")
+    parser.add_argument(
+        "--stop-sender",
+        action="store_true",
+        help="Also stop playback on the sender. Off by default: ungrouping should "
+             "not interrupt whoever is listening on the sender.",
+    )
     parser.add_argument(
         "--env", default=None, help="Path to .env file (default: .env next to script)"
     )
@@ -503,7 +547,7 @@ def main():
         sys.exit(1)
 
     print(f"Loaded {len(devices)} device(s) from {env_path}")
-    success = disband_group(devices, debug=args.debug)
+    success = disband_group(devices, debug=args.debug, stop_sender=args.stop_sender)
     sys.exit(0 if success else 1)
 
 

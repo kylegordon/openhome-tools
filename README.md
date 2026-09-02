@@ -389,9 +389,10 @@ Devices found: 3
 - Auto-detects sender/receiver/standalone roles (no `SONGCAST_SENDER`/`SONGCAST_RECEIVERS` needed)
 - Clears receiver sender URIs via `Receiver.SetSender(empty)` — fixes "zombie" receivers
 - Switches receivers from Songcast source back to Playlist
-- Stops sender playback via `Playlist.Stop`
+- **Leaves the sender playing** — ungrouping does not interrupt whoever is listening on it. The sender stops streaming by itself once the last receiver detaches.
 - Verifies all devices return to standalone state
 - `--debug` flag for detailed SOAP/LPEC output
+- `--stop-sender` to also stop playback on the sender (off by default)
 
 **When to use:**
 - Breaking up a multi-room Songcast group
@@ -682,7 +683,7 @@ These tools use the Linn OpenHome protocol, which is built on top of UPnP/SOAP. 
 - **Sender:1** - Songcast sender control
 - **Pins:1** - Pin/preset management
 - **Info** - Track metadata retrieval
-- **Playlist:1** - Playlist/playback control (used to stop sender playback)
+- **Playlist:1** - Playlist/playback control (stops sender playback only under `--stop-sender`)
 - **Volkano:1** - Linn-specific device management (reboot) — `linn.co.uk-Volkano-1`
 
 ### Communication Methods

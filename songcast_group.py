@@ -90,6 +90,46 @@ def _load_env_devices(env_path):
         pass
     return devices, sender_id, receiver_ids
 
+# Songcast transport schemes, matching what the devices themselves advertise in
+# Receiver.ProtocolInfo ("ohz:*:*:*,ohm:*:*:*,ohu:*.*.*").
+_SONGCAST_SCHEMES = ("ohz", "ohm", "ohu")
+_MAX_DIDL_BYTES = 65536
+_MAX_URI_BYTES = 512
+
+def _uri_from_didl(metadata):
+    """Extract a Songcast stream URI from a DIDL-Lite descriptor's <res> element.
+
+    Sender.Metadata is remote input: it is whatever another box on the network
+    chose to say about itself, and whatever comes back here is fed straight into
+    Receiver.SetSender on a *different* device. So it is validated rather than
+    trusted — only the Songcast transport schemes are accepted, and only within
+    sane bounds. Anything else returns None and the caller falls back to the URI
+    it constructs itself from the UDN configured in .env.
+
+    Matched by tag suffix so it works regardless of how the DIDL-Lite namespace
+    is bound.
+    """
+    if not metadata or len(metadata) > _MAX_DIDL_BYTES:
+        return None
+    try:
+        root = ET.fromstring(metadata)
+    except Exception:
+        return None
+    from urllib.parse import urlparse
+    for el in root.iter():
+        if not el.tag.endswith('res'):
+            continue
+        uri = (el.text or '').strip()
+        if not uri or len(uri) > _MAX_URI_BYTES:
+            continue
+        try:
+            scheme = urlparse(uri).scheme.lower()
+        except Exception:
+            continue
+        if scheme in _SONGCAST_SCHEMES:
+            return uri
+    return None
+
 class LinnSongcastGrouper:
         def __init__(self, sender_ip, sender_udn, receivers, debug=False):
             self.sender_ip = sender_ip
@@ -278,21 +318,31 @@ class LinnSongcastGrouper:
                 candidate_uris = []
                 uri = None
                 metadata = None
-                # Prefer sender's Sender info
+                # Ask the sender to describe itself. Sender.Metadata returns the
+                # DIDL-Lite descriptor the device advertises, whose <res> element
+                # carries the ohz:// URI it is actually reachable on. Preferred
+                # over constructing the URI below, because the sender identifier
+                # in it is not always the bare device UDN and so cannot always be
+                # reconstructed from the UDN alone.
+                # This is remote input and is validated in _uri_from_didl, not
+                # trusted; on rejection we fall through to the constructed URI.
+                # (Note: the Sender service has no "Sender" action — that lives on
+                # Receiver. Metadata is the correct action here.)
                 try:
                     ssvc = sender_dev.device.service_id("urn:av-openhome-org:serviceId:Sender")
                     if ssvc is not None:
-                        sres = await ssvc.action("Sender").async_call()
-                        uri = sres.get("Uri") or sres.get("uri")
-                        metadata = sres.get("Metadata") or sres.get("metadata")
+                        sres = await ssvc.action("Metadata").async_call()
+                        metadata = sres.get("Value") or sres.get("value")
+                        uri = _uri_from_didl(metadata)
                         if uri:
                             candidate_uris.append(uri)
-                except Exception:
+                        elif self.debug:
+                            print("  [DEBUG] Sender.Metadata carried no <res> URI")
+                except Exception as e:
+                    if self.debug:
+                        print(f"  [DEBUG] Sender.Metadata query failed: {e}")
                     uri = None
                     metadata = None
-                if not uri:
-                    uri = self._build_sender_uri(sender_udn, sender_name=sender_name, sender_room=sender_room)
-                candidate_uris.append(uri)
 
                 if metadata is None:
                     # Build metadata matching the Linn App's format:
@@ -314,41 +364,18 @@ class LinnSongcastGrouper:
                         '</DIDL-Lite>'
                     )
 
-                # Discover ohz via Receiver.Senders (short retries)
-                ohz_uri = None
-                for _ in range(6):
-                    try:
-                        slist = await recv.action("Senders").async_call()
-                        raw_list = slist.get("SenderList") or slist.get("List") or slist.get("senders")
-                        if isinstance(raw_list, str) and raw_list.strip():
-                            root = ET.fromstring(raw_list)
-                            items = [el for el in root.iter() if el.tag.endswith('item')]
-                            exact = None
-                            fallbacks = []
-                            for it in items:
-                                title = None
-                                res_uris = []
-                                for ch in it:
-                                    tag = ch.tag
-                                    txt = ch.text or ''
-                                    if tag.endswith('title'):
-                                        title = txt.strip()
-                                    elif tag.endswith('res') and txt.startswith('ohz://'):
-                                        res_uris.append(txt)
-                                if title and res_uris and ((sender_room and title == sender_room) or (sender_name and title == sender_name)):
-                                    exact = res_uris[0]
-                                    break
-                                fallbacks.extend(res_uris)
-                            ohz_uri = exact or (fallbacks[0] if fallbacks else None)
-                        if ohz_uri:
-                            break
-                    except Exception:
-                        pass
-                    await asyncio.sleep(0.5)
-                if ohz_uri:
-                    candidate_uris.insert(0, ohz_uri)
-                elif sender_udn:
-                    candidate_uris.insert(0, f"ohz://239.255.255.250:51972/{sender_udn}")
+                # Fallbacks, tried only if the sender did not advertise a URI.
+                # The multicast group/port is the Songcast well-known address;
+                # this reconstruction is correct for Linn senders.
+                if sender_udn:
+                    constructed = f"ohz://239.255.255.250:51972/{sender_udn}"
+                    if constructed not in candidate_uris:
+                        candidate_uris.append(constructed)
+                descriptor = self._build_sender_uri(sender_udn, sender_name=sender_name, sender_room=sender_room)
+                if descriptor not in candidate_uris:
+                    candidate_uris.append(descriptor)
+                if uri is None:
+                    uri = candidate_uris[0] if candidate_uris else None
                 print(f"Candidates: {candidate_uris}")
 
                 # Try candidates
@@ -380,7 +407,8 @@ class LinnSongcastGrouper:
                                     '</s:Body>'
                                     '</s:Envelope>'
                                 )
-                                requests.post(url, headers=hdrs_set, data=msg_set, timeout=3)
+                                resp_set = requests.post(url, headers=hdrs_set, data=msg_set, timeout=3)
+                                resp_set.raise_for_status()
                                 hdrs_play = {
                                     "SOAPACTION": '"urn:av-openhome-org:service:Receiver:1#Play"',
                                     "Content-Type": 'text/xml; charset="utf-8"'
@@ -394,8 +422,14 @@ class LinnSongcastGrouper:
                                     '</s:Body>'
                                     '</s:Envelope>'
                                 )
-                                requests.post(url, headers=hdrs_play, data=msg_play, timeout=3)
-                            except Exception:
+                                resp_play = requests.post(url, headers=hdrs_play, data=msg_play, timeout=3)
+                                resp_play.raise_for_status()
+                            except Exception as e:
+                                # A SOAP fault comes back as HTTP 500, so this is
+                                # reached on device-side rejection, not just on
+                                # transport failure.
+                                if self.debug:
+                                    print(f"  [DEBUG] SOAP SetSender/Play failed ({e}); retrying via API")
                                 # Fallback to API if SOAP fails
                                 try:
                                     await recv.action("SetSender").async_call(Uri=cand, Metadata=metadata or "")
@@ -442,7 +476,7 @@ class LinnSongcastGrouper:
                     print(f"Final Receiver.Sender Uri: {uri_final}")
                 except Exception:
                     pass
-                return True
+                return ok
             except Exception as e:
                 print(f"⚠ Receiver join failed: {e}")
                 return False
