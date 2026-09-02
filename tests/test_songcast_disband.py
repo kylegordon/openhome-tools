@@ -170,8 +170,8 @@ class TestSoapUrls:
     def test_sender_control_url(self):
         ip = "172.24.32.211"
         udn = "4c494e4e-0026-0f22-5661-01531488013f"
-        expected = f"http://{ip}:55178/{udn}/av.openhome.org-Sender-1/control"
-        url = f"http://{ip}:55178/{udn}/av.openhome.org-Sender-1/control"
+        expected = f"http://{ip}:55178/{udn}/av.openhome.org-Sender-2/control"
+        url = f"http://{ip}:55178/{udn}/av.openhome.org-Sender-2/control"
         assert url == expected
 
 
@@ -213,12 +213,30 @@ class TestClassifyDevices:
         mock_name.return_value = "Study"
         # Source is Playlist, not Receiver/Songcast
         mock_source.return_value = {"index": 0, "type": "Playlist", "name": "Playlist"}
-        # Sender.Status returns Enabled
-        mock_soap.return_value = '<Value>Enabled</Value>'
+        # Sender.Status2 reports it is actively streaming
+        mock_soap.return_value = '<Value>Sending</Value>'
 
         devices = [{"ip": "172.24.32.211", "udn": "udn-sender"}]
         result = songcast_disband.classify_devices(devices)
         assert result[0]["role"] == "sender"
+
+    @patch("songcast_disband.get_device_name")
+    @patch("songcast_disband.get_current_source")
+    @patch("songcast_disband._soap_request")
+    def test_idle_sender_service_is_not_a_sender(self, mock_soap, mock_source, mock_name):
+        """An enabled-but-idle Sender service must not classify as sender.
+
+        Every device reports Sender.Status == "Enabled" whenever the service is
+        switched on. Status2 "Ready" is the idle state; only "Sending" means
+        this device is actually the group leader.
+        """
+        mock_name.return_value = "Living Room"
+        mock_source.return_value = {"index": 0, "type": "Playlist", "name": "Playlist"}
+        mock_soap.return_value = '<Value>Ready</Value>'
+
+        devices = [{"ip": "172.24.32.212", "udn": "udn-idle"}]
+        result = songcast_disband.classify_devices(devices)
+        assert result[0]["role"] == "standalone"
 
     @patch("songcast_disband.get_device_name")
     @patch("songcast_disband.get_current_source")
@@ -258,7 +276,7 @@ class TestClassifyDevices:
 
         def soap_side_effect(ip, udn, service_path, service_urn, action, timeout=5):
             if ip == "172.24.32.211" and "Sender" in service_path:
-                return "<Value>Enabled</Value>"
+                return "<Value>Sending</Value>"
             raise Exception("Not available")
 
         mock_name.side_effect = name_side_effect
@@ -395,6 +413,7 @@ class TestStopOperations:
 # --- Full disband workflow tests ---
 
 class TestDisbandGroup:
+    @patch("songcast_disband.get_sender_status2", return_value="Ready")
     @patch("songcast_disband.get_receiver_sender_uri")
     @patch("songcast_disband.get_current_source")
     @patch("songcast_disband.stop_playlist")
@@ -403,7 +422,8 @@ class TestDisbandGroup:
     @patch("songcast_disband.clear_receiver_sender")
     @patch("songcast_disband.classify_devices")
     def test_disband_full_group(self, mock_classify, mock_clear, mock_stop_recv,
-                                mock_set_src, mock_stop_play, mock_get_src, mock_get_uri):
+                                mock_set_src, mock_stop_play, mock_get_src, mock_get_uri,
+                                mock_status2):
         mock_classify.return_value = [
             {"ip": "172.24.32.211", "udn": "udn-s", "name": "Study", "role": "sender",
              "source": {"index": 1, "type": "Radio", "name": "Radio"}},
@@ -430,7 +450,79 @@ class TestDisbandGroup:
         assert mock_clear.call_count == 2
         assert mock_stop_recv.call_count == 2
         assert mock_set_src.call_count == 2
+        # The sender must keep playing: ungrouping the receivers must not
+        # interrupt whoever is listening on the sender.
+        mock_stop_play.assert_not_called()
+
+    @patch("songcast_disband.get_sender_status2")
+    @patch("songcast_disband.get_receiver_sender_uri")
+    @patch("songcast_disband.get_current_source")
+    @patch("songcast_disband.stop_playlist")
+    @patch("songcast_disband.set_source_index")
+    @patch("songcast_disband.stop_receiver")
+    @patch("songcast_disband.clear_receiver_sender")
+    @patch("songcast_disband.classify_devices")
+    def test_sender_playback_is_left_alone(self, mock_classify, mock_clear, mock_stop_recv,
+                                           mock_set_src, mock_stop_play, mock_get_src,
+                                           mock_get_uri, mock_status2):
+        """Regression: disband must not stop playback on the sender.
+
+        Disbanding ungroups the receivers. The person listening on the sender
+        should keep listening; the Sender service drops back to "Ready" on its
+        own once the last receiver detaches.
+        """
+        mock_classify.return_value = [
+            {"ip": "172.24.32.211", "udn": "udn-s", "name": "Study", "role": "sender",
+             "source": {"index": 0, "type": "Playlist", "name": "Playlist"}},
+            {"ip": "172.24.32.210", "udn": "udn-r", "name": "Tin Hut", "role": "receiver",
+             "source": {"index": 3, "type": "Receiver", "name": "Songcast"}},
+        ]
+        mock_clear.return_value = True
+        mock_stop_recv.return_value = True
+        mock_set_src.return_value = True
+        mock_get_src.return_value = {"index": 0, "type": "Playlist", "name": "Playlist"}
+        mock_get_uri.return_value = ""
+        mock_status2.return_value = "Ready"
+
+        devices = [{"ip": "172.24.32.211", "udn": "udn-s"},
+                   {"ip": "172.24.32.210", "udn": "udn-r"}]
+
+        assert songcast_disband.disband_group(devices) is True
+        mock_stop_play.assert_not_called()
+
+        # ...unless explicitly asked for.
+        assert songcast_disband.disband_group(devices, stop_sender=True) is True
         assert mock_stop_play.call_count == 1
+
+    @patch("songcast_disband.get_sender_status2")
+    @patch("songcast_disband.get_receiver_sender_uri")
+    @patch("songcast_disband.get_current_source")
+    @patch("songcast_disband.stop_playlist")
+    @patch("songcast_disband.set_source_index")
+    @patch("songcast_disband.stop_receiver")
+    @patch("songcast_disband.clear_receiver_sender")
+    @patch("songcast_disband.classify_devices")
+    def test_sender_still_streaming_after_disband_fails(self, mock_classify, mock_clear,
+                                                        mock_stop_recv, mock_set_src,
+                                                        mock_stop_play, mock_get_src,
+                                                        mock_get_uri, mock_status2):
+        """A sender still 'Sending' means a receiver never detached."""
+        mock_classify.return_value = [
+            {"ip": "172.24.32.211", "udn": "udn-s", "name": "Study", "role": "sender",
+             "source": {"index": 0, "type": "Playlist", "name": "Playlist"}},
+            {"ip": "172.24.32.210", "udn": "udn-r", "name": "Tin Hut", "role": "receiver",
+             "source": {"index": 3, "type": "Receiver", "name": "Songcast"}},
+        ]
+        mock_clear.return_value = True
+        mock_stop_recv.return_value = True
+        mock_set_src.return_value = True
+        mock_get_src.return_value = {"index": 0, "type": "Playlist", "name": "Playlist"}
+        mock_get_uri.return_value = ""
+        mock_status2.return_value = "Sending"
+
+        devices = [{"ip": "172.24.32.211", "udn": "udn-s"},
+                   {"ip": "172.24.32.210", "udn": "udn-r"}]
+        assert songcast_disband.disband_group(devices) is False
 
     @patch("songcast_disband.stop_playlist")
     @patch("songcast_disband.set_source_index")
@@ -457,6 +549,7 @@ class TestDisbandGroup:
         mock_set_src.assert_not_called()
         mock_stop_play.assert_not_called()
 
+    @patch("songcast_disband.get_sender_status2", return_value="Ready")
     @patch("songcast_disband.get_receiver_sender_uri")
     @patch("songcast_disband.get_current_source")
     @patch("songcast_disband.stop_playlist")
@@ -465,7 +558,8 @@ class TestDisbandGroup:
     @patch("songcast_disband.clear_receiver_sender")
     @patch("songcast_disband.classify_devices")
     def test_disband_source_switch_fails(self, mock_classify, mock_clear, mock_stop_recv,
-                                         mock_set_src, mock_stop_play, mock_get_src, mock_get_uri):
+                                         mock_set_src, mock_stop_play, mock_get_src, mock_get_uri,
+                                         mock_status2):
         mock_classify.return_value = [
             {"ip": "172.24.32.211", "udn": "udn-s", "name": "Study", "role": "sender",
              "source": {"index": 1, "type": "Radio", "name": "Radio"}},

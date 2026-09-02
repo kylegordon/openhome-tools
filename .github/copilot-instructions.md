@@ -86,19 +86,25 @@ Any local AI coding assistant (GitHub Copilot or otherwise) MUST run the followi
 
 ### Key OpenHome Services
 - **Product:4** - Source selection (`SourceCount`, `Source`, `SetSourceIndex`, `SourceIndex`), standby control
-- **Receiver:1** - Songcast follower (`SetSender`, `Sender`, `TransportState`, `Status`, `Stop`, `Play`)
-- **Sender:1** - Songcast leader (`Sender` returns `Uri`/`Metadata`, `Status` returns Enabled/Disabled)
+- **Receiver:1** - Songcast follower. Actions are exactly: `Play`, `Stop`, `SetSender`, `Sender`, `ProtocolInfo`, `TransportState`. There is **no** `Senders` action — the repo called one for months and silently swallowed the failure.
+- **Sender:2** - Songcast leader. Actions are exactly: `PresentationUrl`, `Metadata`, `Audio`, `Status`, `Status2`, `Enabled`, `Attributes`. There is **no** `Sender` action on this service (that lives on Receiver). `Metadata` returns the DIDL-Lite descriptor whose `<res>` holds the leader's `ohz://` URI. `Status` returns Enabled/Disabled and is **not** a sending indicator; `Status2` returns Ready/Sending and is.
 - **Pins:1** - Presets/favorites (`InvokeId`, `GetIdArray`, `ReadList`)
 - **Info** - Track metadata (`TrackTitle`, `Metatext` for radio stations)
-- **Playlist:1** - Playback control (`Stop` used to stop sender playback during disband)
+- **Playlist:1** - Playback control (`Stop` used only under `songcast_disband.py --stop-sender`)
 - **Volkano:1** - Linn-specific device management (`Reboot` action - NOT in Product service!) — service path: `linn.co.uk-Volkano-1`
+
+**Verify action names against the device, never assume.** `curl -s http://<IP>:55178/<UDN>/Upnp/<service-path>/service.xml` lists them in seconds. Note that `/control` endpoints **ignore the service version** in both the URL path and the URN (`Sender-1/control` ≡ `Sender-2/control`; `Volkano-1` ≡ `Volkano-3`), so a version mismatch in a hardcoded path is never the cause of a failing call — suspect the action name. Only `service.xml` is version-strict.
 
 ### Songcast Multi-Room Architecture
 - **ohz:// URIs** - Preferred multicast streaming protocol (port 51972, `ohz://239.255.255.250:51972/...`)
 - **ohSongcast:// URIs** - Fallback descriptor format with room/name query params
 - **Leader Discovery**: Query follower's `Receiver.Sender()` Uri, parse for leader UDN/room/name
+- **Leader URI**: ask the leader itself via `Sender.Metadata` and read the `<res>` element (`_uri_from_didl` in `songcast_group.py`). Do **not** reconstruct it from the UDN — the sender identifier in it is not always the bare UDN. `ohz://239.255.255.250:51972/<udn>` stays a valid fallback for Linn leaders.
+- **Device responses are untrusted input.** `Sender.Metadata` comes from another box on the network and its `<res>` value is fed straight into `Receiver.SetSender` on a different device, so `_uri_from_didl` validates it (schemes `ohz`/`ohm`/`ohu` only, length-bounded) and falls back to the locally-constructed URI on rejection. Never widen a value observed on one device into a general claim about device behaviour.
 - **Grouping Flow**: Wake devices → Set follower source to Songcast (find index via `Product.Source`) → Call `Receiver.SetSender(Uri, Metadata)` → Poll `TransportState` for "playing"
-- **Disbanding Flow**: `Receiver.SetSender(Uri="", Metadata="")` → `Receiver.Stop` → `Product.SetSourceIndex(0)` to switch from Songcast to Playlist → `Playlist.Stop` on sender. Key insight: `Receiver.Stop` alone is insufficient for zombie receivers still bound to an ohz:// URI — must clear the URI first.
+- **Disbanding Flow**: `Receiver.SetSender(Uri="", Metadata="")` → `Receiver.Stop` → `Product.SetSourceIndex(0)` to switch from Songcast to Playlist. Key insight: `Receiver.Stop` alone is insufficient for zombie receivers still bound to an ohz:// URI — must clear the URI first.
+- **The sender keeps playing.** Disbanding detaches followers; it must not interrupt whoever is listening on the leader. `Sender.Status2` falls from `Sending` to `Ready` by itself once the last follower detaches (verified on hardware), so nothing needs sending to the leader. `--stop-sender` opts in to `Playlist.Stop`.
+- **Role detection**: a device is the leader only if `Sender.Status2 == "Sending"`. `Sender.Status` reports `Enabled` on every idle device and will classify the entire fleet as leaders.
 - **Verification**: Check `Sender` Uri scheme is `ohz` OR `TransportState` is "playing"/"buffering"
 
 ## Development Workflows

@@ -100,3 +100,112 @@ class TestFindSongcastIndex:
         dev = _make_dev(_make_prod(sources))
         result = asyncio.run(_grouper(debug=True)._find_songcast_index(dev))
         assert result == 1
+
+
+class TestUriFromDidl:
+    """Sender.Metadata is the authoritative source for a sender's ohz:// URI.
+
+    The sender identifier in that URI is not always the bare device UDN, so it
+    cannot be reconstructed from the UDN alone — it has to be read from the
+    <res> element of the descriptor the sender advertises.
+    """
+
+    # Verbatim response from Sender.Metadata on a real Linn DSM.
+    REAL = (
+        '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/"'
+        ' xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"'
+        ' xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/">'
+        '<item id="0" restricted="True">'
+        "<dc:title>Linn Study</dc:title>"
+        '<res protocolInfo="ohz:*:*:u">'
+        "ohz://239.255.255.250:51972/4c494e4e-0026-0f22-5661-01531488013f</res>"
+        "<upnp:albumArtURI>http://172.24.32.211:55178/x/icons/1022.png</upnp:albumArtURI>"
+        "<upnp:class>object.item.audioItem</upnp:class>"
+        "</item></DIDL-Lite>"
+    )
+
+    def test_extracts_ohz_uri_from_real_sender_metadata(self):
+        assert songcast_group._uri_from_didl(self.REAL) == (
+            "ohz://239.255.255.250:51972/4c494e4e-0026-0f22-5661-01531488013f"
+        )
+
+    def test_extracts_non_udn_sender_identifier(self):
+        # The identifier in the URI is not always the bare device UDN, so
+        # constructing the URI from the UDN can produce the wrong address.
+        didl = self.REAL.replace("51972/4c494e4e", "51972/softsender-4c494e4e")
+        assert songcast_group._uri_from_didl(didl) == (
+            "ohz://239.255.255.250:51972/softsender-4c494e4e-0026-0f22-5661-01531488013f"
+        )
+
+    def test_undeclared_namespace_still_parses(self):
+        didl = (
+            '<DIDL-Lite><item><res protocolInfo="ohz:*:*:u">'
+            "ohz://239.255.255.250:51972/abc</res></item></DIDL-Lite>"
+        )
+        assert songcast_group._uri_from_didl(didl) == "ohz://239.255.255.250:51972/abc"
+
+    def test_missing_res_returns_none(self):
+        didl = "<DIDL-Lite><item><dc:title xmlns:dc='http://purl.org/dc/elements/1.1/'>x</dc:title></item></DIDL-Lite>"
+        assert songcast_group._uri_from_didl(didl) is None
+
+    def test_empty_res_is_ignored(self):
+        didl = (
+            '<DIDL-Lite><item><res protocolInfo="ohz:*:*:u"></res></item></DIDL-Lite>'
+        )
+        assert songcast_group._uri_from_didl(didl) is None
+
+    def test_malformed_xml_returns_none_not_raises(self):
+        assert songcast_group._uri_from_didl("<DIDL-Lite><item>") is None
+
+    def test_empty_and_none_return_none(self):
+        assert songcast_group._uri_from_didl("") is None
+        assert songcast_group._uri_from_didl(None) is None
+
+
+class TestUriFromDidlRejectsUntrustedInput:
+    """Sender.Metadata is remote input, and whatever it yields is handed to
+    Receiver.SetSender on a *different* device. It is validated, not trusted:
+    rejection makes the caller fall back to the URI built from the UDN in .env.
+    """
+
+    @staticmethod
+    def _didl(uri):
+        return f'<DIDL-Lite><item><res protocolInfo="ohz:*:*:u">{uri}</res></item></DIDL-Lite>'
+
+    def test_accepts_all_three_songcast_schemes(self):
+        for uri in (
+            "ohz://239.255.255.250:51972/abc",
+            "ohm://239.255.255.250:51972/abc",
+            "ohu://192.168.1.10:51972/abc",
+        ):
+            assert songcast_group._uri_from_didl(self._didl(uri)) == uri
+
+    def test_rejects_non_songcast_schemes(self):
+        for uri in (
+            "http://evil.example/pwn",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "ohz",
+            "/no/scheme/at/all",
+        ):
+            assert songcast_group._uri_from_didl(self._didl(uri)) is None
+
+    def test_skips_bad_res_and_takes_a_valid_later_one(self):
+        didl = (
+            "<DIDL-Lite><item>"
+            '<res protocolInfo="http-get:*:*:*">http://evil.example/pwn</res>'
+            '<res protocolInfo="ohz:*:*:u">ohz://239.255.255.250:51972/good</res>'
+            "</item></DIDL-Lite>"
+        )
+        assert songcast_group._uri_from_didl(didl) == "ohz://239.255.255.250:51972/good"
+
+    def test_rejects_overlong_uri(self):
+        long_uri = "ohz://239.255.255.250:51972/" + (
+            "a" * songcast_group._MAX_URI_BYTES
+        )
+        assert songcast_group._uri_from_didl(self._didl(long_uri)) is None
+
+    def test_rejects_oversized_descriptor_without_parsing(self):
+        padding = "<!--" + ("x" * songcast_group._MAX_DIDL_BYTES) + "-->"
+        didl = padding + self._didl("ohz://239.255.255.250:51972/abc")
+        assert songcast_group._uri_from_didl(didl) is None
