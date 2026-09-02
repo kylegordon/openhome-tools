@@ -99,6 +99,8 @@ Any local AI coding assistant (GitHub Copilot or otherwise) MUST run the followi
 
 **LPEC wire format**, captured from firmware: `SUBSCRIBE Ds/X` → `SUBSCRIBE <id>`, then `EVENT <subscription-id> <seq> <var> "<value>" ...`. The id is a per-device counter, never 0, and the service name is absent from event lines. `Ds/Receiver` emits `Uri`, `Metadata`, `TransportState`, `ProtocolInfo` — **no `Sender`, no `Status`**; the bound sender is `Uri`. Anchor variable names at a token boundary.
 
+**Waking from standby is slow, and `SetStandby(False)` may time out while still working.** Observed on a Selekt: the wake timed out but the device woke and everything after it succeeded; the same device is quick once awake. `songcast_group.py` therefore ignores `wake_device()`'s result on purpose — making a failed wake fatal would abort joins that would otherwise succeed. Don't "fix" that, and allow generous timeouts for devices that may be asleep.
+
 **Pins: `InvokeId` wants the device pin Id from `GetIdArray`** (e.g. `[1, 0, 2, 3, 0, 4]`, where 0 is an empty slot), not the 1-based UI number. Use `resolve_pin_id()`.
 
 **Verify action names against the device, never assume.** `curl -s http://<IP>:55178/<UDN>/Upnp/<service-path>/service.xml` lists them in seconds. Note that `/control` endpoints **ignore the service version** in both the URL path and the URN (`Sender-1/control` ≡ `Sender-2/control`; `Volkano-1` ≡ `Volkano-3`), so a version mismatch in a hardcoded path is never the cause of a failing call — suspect the action name. Only `service.xml` is version-strict.
